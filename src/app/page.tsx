@@ -16,6 +16,20 @@ type Child = {
   createdAt: string;
 };
 
+type AccessCodeStatus = "Выдан" | "Активен" | "Использован" | "Завершён" | "Переоткрыт" | "Сброшен";
+
+type AccessCodeRecord = {
+  id: string;
+  code: string;
+  childId: string;
+  registryId: string;
+  grade: Grade;
+  classGroup: ClassGroup;
+  status: AccessCodeStatus;
+  createdAt: string;
+  updatedAt: string;
+};
+
 type Campaign = {
   id: ClassGroup;
   title: ClassGroup;
@@ -66,6 +80,7 @@ type Session = {
 
 type Store = {
   children: Child[];
+  accessCodes: AccessCodeRecord[];
   campaigns: Campaign[];
   sessions: Session[];
 };
@@ -879,6 +894,7 @@ const FIXED_CAMPAIGNS: Campaign[] = CLASS_GROUPS.map((group) => ({
 
 const EMPTY_STORE: Store = {
   children: [],
+  accessCodes: [],
   campaigns: FIXED_CAMPAIGNS,
   sessions: [],
 };
@@ -981,6 +997,48 @@ function normalizeAnswers(grade: Grade, answers: Session["answers"]): SessionAns
   });
 }
 
+function normalizeAccessCodes(rawCodes: unknown, children: Child[]): AccessCodeRecord[] {
+  const rawItems = Array.isArray(rawCodes) ? (rawCodes as Partial<AccessCodeRecord>[]) : [];
+  const childById = new Map(children.map((child) => [child.id, child]));
+  const normalizedByCode = new Map<string, AccessCodeRecord>();
+
+  for (const item of rawItems) {
+    const fallbackChild = typeof item.childId === "string" ? childById.get(item.childId) : undefined;
+    const code = normalizeAccessCode(typeof item.code === "string" ? item.code : fallbackChild?.accessCode ?? "");
+    if (!ACCESS_CODE_FORMAT.test(code) || !fallbackChild) continue;
+
+    normalizedByCode.set(code, {
+      id: typeof item.id === "string" ? item.id : uid("ac"),
+      code,
+      childId: fallbackChild.id,
+      registryId: fallbackChild.registryId,
+      grade: fallbackChild.grade,
+      classGroup: fallbackChild.classGroup,
+      status: item.status ?? "Выдан",
+      createdAt: typeof item.createdAt === "string" ? item.createdAt : fallbackChild.createdAt,
+      updatedAt: typeof item.updatedAt === "string" ? item.updatedAt : new Date().toISOString(),
+    });
+  }
+
+  for (const child of children) {
+    const code = normalizeAccessCode(child.accessCode);
+    if (!ACCESS_CODE_FORMAT.test(code) || normalizedByCode.has(code)) continue;
+    normalizedByCode.set(code, {
+      id: uid("ac"),
+      code,
+      childId: child.id,
+      registryId: child.registryId,
+      grade: child.grade,
+      classGroup: child.classGroup,
+      status: "Выдан",
+      createdAt: child.createdAt,
+      updatedAt: child.createdAt,
+    });
+  }
+
+  return [...normalizedByCode.values()].sort((a, b) => toTimestamp(b.createdAt) - toTimestamp(a.createdAt));
+}
+
 function normalizeStore(raw: Store): Store {
   const legacyCampaignMap = new Map((raw.campaigns ?? []).map((campaign) => [campaign.id, campaign]));
   const normalizedChildren: Child[] = (raw.children ?? []).map((child) => {
@@ -1028,6 +1086,7 @@ function normalizeStore(raw: Store): Store {
 
   return {
     children: normalizedChildren,
+    accessCodes: normalizeAccessCodes((raw as Store & { accessCodes?: AccessCodeRecord[] }).accessCodes, normalizedChildren),
     campaigns: FIXED_CAMPAIGNS,
     sessions: sessions.map((session) => {
       if (!demotedCompleted.has(session.id)) return session;
@@ -1059,8 +1118,6 @@ function adminStatusLabel(session: Session): string {
   return "на паузе";
 }
 
-type AccessCodeStatus = "Выдан" | "Активен" | "Использован" | "Завершён" | "Переоткрыт" | "Сброшен";
-
 const ACCESS_CODE_FORMAT = /^[A-Z0-9]{6}$/;
 
 function normalizeAccessCode(input: string): string {
@@ -1072,9 +1129,9 @@ function maskAccessCode(code: string): string {
   return `${"•".repeat(Math.max(4, code.length - 4))}${code.slice(-4)}`;
 }
 
-function accessCodeStatus(child: Child, sessions: Session[]): AccessCodeStatus {
-  const childSessions = sessions.filter((session) => session.childId === child.id);
-  if (!childSessions.length) return "Выдан";
+function accessCodeStatus(codeRecord: AccessCodeRecord, sessions: Session[]): AccessCodeStatus {
+  const childSessions = sessions.filter((session) => session.childId === codeRecord.childId);
+  if (!childSessions.length) return codeRecord.status;
 
   const hasCompleted = childSessions.some((session) => session.status === "completed");
   if (hasCompleted) return "Завершён";
@@ -1128,9 +1185,10 @@ export default function Home() {
     window.localStorage.setItem(STORAGE_KEY, JSON.stringify({ ...store, campaigns: FIXED_CAMPAIGNS }));
   }, [store]);
 
-  const childrenByCode = useMemo(
-    () => new Map(store.children.map((child) => [normalizeAccessCode(child.accessCode), child])),
-    [store.children],
+  const childrenById = useMemo(() => new Map(store.children.map((child) => [child.id, child])), [store.children]);
+  const accessCodesByCode = useMemo(
+    () => new Map(store.accessCodes.map((record) => [normalizeAccessCode(record.code), record])),
+    [store.accessCodes],
   );
   const loggedChild = loggedChildId ? store.children.find((child) => child.id === loggedChildId) : null;
 
@@ -1157,20 +1215,48 @@ export default function Home() {
 
   function issueAccessCode(): void {
     let code = createCode();
-    while (childrenByCode.has(code)) {
+    while (accessCodesByCode.has(code)) {
       code = createCode();
     }
 
+    const nowIso = new Date().toISOString();
     const child: Child = {
       id: uid("ch"),
       registryId: `ANON-${Date.now().toString(36).slice(-4).toUpperCase()}-${Math.random().toString(36).slice(2, 4).toUpperCase()}`,
       grade: gradeFromClassGroup(childClassGroup),
       classGroup: childClassGroup,
       accessCode: code,
-      createdAt: new Date().toISOString(),
+      createdAt: nowIso,
     };
 
-    setStore((prev) => ({ ...prev, campaigns: FIXED_CAMPAIGNS, children: [child, ...prev.children] }));
+    const codeRecord: AccessCodeRecord = {
+      id: uid("ac"),
+      code,
+      childId: child.id,
+      registryId: child.registryId,
+      grade: child.grade,
+      classGroup: child.classGroup,
+      status: "Выдан",
+      createdAt: nowIso,
+      updatedAt: nowIso,
+    };
+
+    // Keep access code issuance atomic: child profile + canonical access-code registry are written together.
+    setStore((prev) => ({
+      ...prev,
+      campaigns: FIXED_CAMPAIGNS,
+      children: [child, ...prev.children],
+      accessCodes: [codeRecord, ...prev.accessCodes],
+    }));
+    if (process.env.NODE_ENV !== "production") {
+      console.info("[dev] issued access code", {
+        issuedCode: codeRecord.code,
+        childId: codeRecord.childId,
+        studentId: codeRecord.registryId,
+        classGroup: codeRecord.classGroup,
+        source: "store.accessCodes",
+      });
+    }
     show("ok", `Код доступа создан: ${code}`);
   }
 
@@ -1182,13 +1268,20 @@ export default function Home() {
       return;
     }
 
-    const child = childrenByCode.get(normalizedCode);
-    if (!child) {
+    // Canonical login source is store.accessCodes; do not depend on transient/derived child maps.
+    const codeRecord = accessCodesByCode.get(normalizedCode);
+    if (!codeRecord) {
       show("error", "Код не найден. Проверьте ввод.");
       return;
     }
 
-    const status = accessCodeStatus(child, store.sessions);
+    const child = childrenById.get(codeRecord.childId);
+    if (!child) {
+      show("error", "Ошибка состояния данных. Обратитесь к администратору.");
+      return;
+    }
+
+    const status = accessCodeStatus(codeRecord, store.sessions);
     if (status === "Завершён") {
       show("error", "Тестирование по этому коду уже завершено.");
       return;
@@ -1201,6 +1294,16 @@ export default function Home() {
     setRole("child");
     setLoggedChildId(child.id);
     setLoginCode("");
+    if (process.env.NODE_ENV !== "production") {
+      console.info("[dev] child login lookup", {
+        inputCode: normalizedCode,
+        canonicalSource: "store.accessCodes",
+        resolvedChildId: child.id,
+        studentId: child.registryId,
+        classGroup: child.classGroup,
+        status,
+      });
+    }
     show("ok", `Вход выполнен. Профиль: ${child.registryId}`);
   }
 
@@ -1427,14 +1530,20 @@ export default function Home() {
       return;
     }
 
-    if (!store.children.length) {
+    if (!store.accessCodes.length) {
       show("error", "Нет кодов для экспорта.");
       return;
     }
 
     const rows = [
       ["registryId", "classGroup", "grade", "accessCode", "createdAt"],
-      ...store.children.map((child) => [child.registryId, child.classGroup, child.grade.toString(), child.accessCode, child.createdAt]),
+      ...store.accessCodes.map((record) => [
+        record.registryId,
+        record.classGroup,
+        record.grade.toString(),
+        record.code,
+        record.createdAt,
+      ]),
     ];
 
     const blob = new Blob([toCsv(rows)], { type: "text/csv;charset=utf-8" });
@@ -1579,14 +1688,14 @@ export default function Home() {
                     </tr>
                   </thead>
                   <tbody>
-                    {store.children.map((child) => {
-                      const status = accessCodeStatus(child, store.sessions);
-                      const shouldMask = hasChildUsedCode.has(child.id) || status === "Завершён";
+                    {store.accessCodes.map((record) => {
+                      const status = accessCodeStatus(record, store.sessions);
+                      const shouldMask = hasChildUsedCode.has(record.childId) || status === "Завершён";
                       return (
-                        <tr className="border-t border-slate-700" key={child.id}>
-                          <td className="p-2">{child.registryId}</td>
-                          <td className="p-2">{child.classGroup}</td>
-                          <td className="p-2 font-mono text-sky-300">{shouldMask ? maskAccessCode(child.accessCode) : child.accessCode}</td>
+                        <tr className="border-t border-slate-700" key={record.id}>
+                          <td className="p-2">{record.registryId}</td>
+                          <td className="p-2">{record.classGroup}</td>
+                          <td className="p-2 font-mono text-sky-300">{shouldMask ? maskAccessCode(record.code) : record.code}</td>
                           <td className="p-2">{status}</td>
                         </tr>
                       );
