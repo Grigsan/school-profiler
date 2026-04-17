@@ -252,17 +252,37 @@ function subskillDiagnostics(grade: Grade, answers: SessionAnswer[], batteryId?:
 
 function interpretationFromScaled(batteryId: string, scaled: number): string {
   const focus = domainFocusLabel(batteryId);
-  if (scaled >= 9) return `Выраженно сильный результат в зоне ${focus}; уместны задания повышенной сложности.`;
-  if (scaled >= 7) return `Устойчивый результат в зоне ${focus}; можно постепенно наращивать сложность.`;
-  if (scaled >= 5) return `Рабочий базовый уровень в зоне ${focus}; полезна регулярная тренировка без форсирования темпа.`;
-  if (scaled >= 3) return `Результат ниже ожидаемого в зоне ${focus}; желательны пошаговые упражнения и сопровождение.`;
-  return `Пока выраженные затруднения в зоне ${focus}; рекомендуется щадящий формат и дополнительная диагностика в динамике.`;
+  if (scaled >= 8) return `Выраженно сильная сторона в зоне ${focus}; уместны задания повышенной сложности при сохранении комфортного темпа.`;
+  if (scaled >= 5) return `Достаточно сформированный показатель в зоне ${focus}; полезна регулярная практика и постепенное усложнение.`;
+  if (scaled >= 3) return `Сниженный показатель в зоне ${focus}; рекомендуется пошаговая поддержка и тренировка базовых операций.`;
+  return `Выраженно сниженный показатель в зоне ${focus}; необходим щадящий формат, сопровождение и наблюдение в динамике.`;
+}
+
+function absoluteDomainLevel(scaled: number): "high" | "medium" | "low" | "veryLow" {
+  if (scaled >= 8) return "high";
+  if (scaled >= 5) return "medium";
+  if (scaled >= 3) return "low";
+  return "veryLow";
+}
+
+function buildDomainInterpretation(
+  batteryId: string,
+  scaled: number,
+  domainStats: { max: number; min: number; hasLower: boolean },
+): string {
+  const focus = domainFocusLabel(batteryId);
+  const level = absoluteDomainLevel(scaled);
+
+  if ((level === "low" || level === "veryLow") && scaled === domainStats.max && domainStats.hasLower) {
+    return `Относительно более сохранный показатель на фоне остальных в зоне ${focus}; при этом абсолютный уровень остаётся сниженным и требует поддержки.`;
+  }
+
+  return interpretationFromScaled(batteryId, scaled);
 }
 
 function computeScoresFromAnswers(grade: Grade, answers: SessionAnswer[], startedAt: string): SessionScore[] {
   const batteries = BATTERIES[grade];
-
-  return batteries.map((battery, batteryIndex) => {
+  const scores = batteries.map((battery, batteryIndex) => {
     const answered = answers
       .filter((a) => a.batteryId === battery.id)
       .sort((a, b) => toTimestamp(a.answeredAt) - toTimestamp(b.answeredAt));
@@ -289,11 +309,24 @@ function computeScoresFromAnswers(grade: Grade, answers: SessionAnswer[], starte
       rawScore,
       scaledScore,
       durationSec,
-      interpretation: interpretationFromScaled(battery.id, scaledScore),
+      interpretation: "",
       answered: answered.length,
       correct,
     };
   });
+
+  const scaledValues = scores.map((score) => score.scaledScore);
+  const max = Math.max(...scaledValues);
+  const min = Math.min(...scaledValues);
+
+  return scores.map((score) => ({
+    ...score,
+    interpretation: buildDomainInterpretation(score.batteryId, score.scaledScore, {
+      max,
+      min,
+      hasLower: score.scaledScore > min,
+    }),
+  }));
 }
 
 function computeRecommendation(grade: Grade, scores: SessionScore[]): string {
@@ -311,17 +344,32 @@ function computeRecommendation(grade: Grade, scores: SessionScore[]): string {
     const score = scores.find((s) => s.batteryId === battery.id)?.scaledScore ?? 10;
     return score < worst.score ? { score, batteryId: battery.id } : worst;
   }, { score: 11, batteryId: relevant[0].id });
-  const profileNote = `Относительно сильный домен: ${batteryLabel(strongestDomain.batteryId)}; зона развития: ${batteryLabel(weakestDomain.batteryId)}.`;
+  const strongestLevel = absoluteDomainLevel(strongestDomain.score);
+  const weakestLevel = absoluteDomainLevel(weakestDomain.score);
+
+  const strongestNote =
+    strongestLevel === "high"
+      ? `Выраженно сильная сторона: ${batteryLabel(strongestDomain.batteryId)}.`
+      : strongestLevel === "medium"
+        ? `Наиболее сохранный показатель: ${batteryLabel(strongestDomain.batteryId)} (достаточно сформированный уровень).`
+        : `На фоне остальных показателей блок ${batteryLabel(strongestDomain.batteryId).toLowerCase()} выглядит относительно более сохранным, однако общий уровень по всем доменам остаётся сниженным.`;
+
+  const weakestNote =
+    weakestLevel === "veryLow"
+      ? `Наиболее выраженные трудности наблюдаются в блоке ${batteryLabel(weakestDomain.batteryId).toLowerCase()}.`
+      : `Зона наибольших трудностей: ${batteryLabel(weakestDomain.batteryId).toLowerCase()}.`;
+
+  const cautionNote = "Результат носит предварительный и консультативный характер.";
 
   if (avg >= 8) {
-    return `Предварительная рекомендация: маршрут с углублёнными задачами и контролем темпа. Основание: средний доменный балл ${avg.toFixed(1)}/10. ${profileNote} Вывод не является окончательным решением и требует очной профессиональной верификации.`;
+    return `Предварительная рекомендация: маршрут с углублёнными задачами и контролем темпа. Основание: средний доменный балл ${avg.toFixed(1)}/10, разброс результатов ${spread} балл(а). ${strongestNote} ${weakestNote} ${cautionNote}`;
   }
 
   if (avg >= 5) {
-    return `Предварительная рекомендация: базовый маршрут с адресной поддержкой по отдельным зонам. Основание: средний доменный балл ${avg.toFixed(1)}/10, разброс результатов ${spread} балл(а). ${profileNote} Рекомендация консультативная и не заменяет профессиональное заключение.`;
+    return `Предварительная рекомендация: базовый маршрут с адресной поддержкой по отдельным зонам. Основание: средний доменный балл ${avg.toFixed(1)}/10, разброс результатов ${spread} балл(а). ${strongestNote} ${weakestNote} ${cautionNote}`;
   }
 
-  return `Предварительная рекомендация: поддерживающий маршрут с поэтапным усилением базовых навыков. Основание: средний доменный балл ${avg.toFixed(1)}/10, минимальный доменный показатель ${min}/10. ${profileNote} Нужна дополнительная оценка специалистом и наблюдение в динамике; автоматическое решение по одной сессии недопустимо.`;
+  return `Предварительная рекомендация: поддерживающий маршрут с поэтапным усилением базовых навыков. Основание: средний доменный балл ${avg.toFixed(1)}/10, минимальный доменный показатель ${min}/10. ${strongestNote} ${weakestNote} Нужна дополнительная оценка специалистом и наблюдение в динамике; автоматическое решение по одной сессии недопустимо. ${cautionNote}`;
 }
 
 function normalizeAnswers(grade: Grade, answers: Session["answers"]): SessionAnswer[] {
