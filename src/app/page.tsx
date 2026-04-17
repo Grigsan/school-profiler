@@ -3,6 +3,7 @@
 import { FormEvent, useEffect, useMemo, useState } from "react";
 
 type Grade = 4 | 6;
+type ClassGroup = "4А" | "4Б" | "6А" | "6Б";
 type SessionStatus = "active" | "paused" | "completed";
 type SessionAdminState = "default" | "reset" | "reopened";
 
@@ -10,13 +11,14 @@ type Child = {
   id: string;
   registryId: string;
   grade: Grade;
+  classGroup: ClassGroup;
   accessCode: string;
   createdAt: string;
 };
 
 type Campaign = {
-  id: string;
-  title: string;
+  id: ClassGroup;
+  title: ClassGroup;
   grade: Grade;
   createdAt: string;
 };
@@ -48,7 +50,7 @@ type RecommendationOverride = {
 type Session = {
   id: string;
   childId: string;
-  campaignId: string;
+  campaignId: ClassGroup;
   grade: Grade;
   status: SessionStatus;
   startedAt: string;
@@ -85,6 +87,20 @@ type BatteryDefinition = {
 };
 
 const STORAGE_KEY = "school-profiler-store-v1";
+const ADMIN_PIN = "4321";
+const CLASS_GROUPS: ClassGroup[] = ["4А", "4Б", "6А", "6Б"];
+
+function gradeFromClassGroup(group: ClassGroup): Grade {
+  return group.startsWith("4") ? 4 : 6;
+}
+
+function normalizeClassGroup(value: unknown, fallbackGrade: Grade): ClassGroup {
+  if (typeof value === "string" && CLASS_GROUPS.includes(value as ClassGroup)) {
+    return value as ClassGroup;
+  }
+
+  return fallbackGrade === 4 ? "4А" : "6А";
+}
 
 const BATTERIES: Record<Grade, BatteryDefinition[]> = {
   4: [
@@ -853,9 +869,16 @@ const QUESTION_SETS: Record<Grade, Question[]> = {
   ],
 };
 
+const FIXED_CAMPAIGNS: Campaign[] = CLASS_GROUPS.map((group) => ({
+  id: group,
+  title: group,
+  grade: gradeFromClassGroup(group),
+  createdAt: "2026-01-01T00:00:00.000Z",
+}));
+
 const EMPTY_STORE: Store = {
   children: [],
-  campaigns: [],
+  campaigns: FIXED_CAMPAIGNS,
   sessions: [],
 };
 
@@ -958,16 +981,31 @@ function normalizeAnswers(grade: Grade, answers: Session["answers"]): SessionAns
 }
 
 function normalizeStore(raw: Store): Store {
+  const legacyCampaignMap = new Map((raw.campaigns ?? []).map((campaign) => [campaign.id, campaign]));
+  const normalizedChildren: Child[] = (raw.children ?? []).map((child) => {
+    const fallbackGrade = child.grade === 6 ? 6 : 4;
+    const classGroup = normalizeClassGroup((child as Partial<Child>).classGroup, fallbackGrade);
+    return { ...child, grade: gradeFromClassGroup(classGroup), classGroup };
+  });
+  const childById = new Map(normalizedChildren.map((child) => [child.id, child]));
+
   const sessions = (raw.sessions ?? []).map((session) => {
-    const normalizedAnswers = normalizeAnswers(session.grade, session.answers ?? []);
-    const totalQuestions = QUESTION_SETS[session.grade].length;
-    const scores = computeScoresFromAnswers(session.grade, normalizedAnswers, session.startedAt);
+    const child = childById.get(session.childId);
+    const fallbackGrade = child?.grade ?? session.grade ?? 4;
+    const campaignGroupFromLegacy = legacyCampaignMap.get(session.campaignId)?.title;
+    const classGroup = normalizeClassGroup(session.campaignId || campaignGroupFromLegacy, fallbackGrade);
+    const resolvedGrade = child?.grade ?? gradeFromClassGroup(classGroup);
+    const normalizedAnswers = normalizeAnswers(resolvedGrade, session.answers ?? []);
+    const totalQuestions = QUESTION_SETS[resolvedGrade].length;
+    const scores = computeScoresFromAnswers(resolvedGrade, normalizedAnswers, session.startedAt);
 
     return {
       ...session,
+      campaignId: classGroup,
+      grade: resolvedGrade,
       answers: normalizedAnswers,
       scores,
-      recommendation: computeRecommendation(session.grade, scores),
+      recommendation: computeRecommendation(resolvedGrade, scores),
       currentQuestionIndex: clamp(session.currentQuestionIndex ?? normalizedAnswers.length, 0, totalQuestions),
       adminState: session.adminState ?? "default",
     };
@@ -988,8 +1026,8 @@ function normalizeStore(raw: Store): Store {
   });
 
   return {
-    children: raw.children ?? [],
-    campaigns: raw.campaigns ?? [],
+    children: normalizedChildren,
+    campaigns: FIXED_CAMPAIGNS,
     sessions: sessions.map((session) => {
       if (!demotedCompleted.has(session.id)) return session;
       return {
@@ -1070,17 +1108,16 @@ export default function Home() {
     }
   });
 
-  const [role, setRole] = useState<"admin" | "child">("admin");
+  const [role, setRole] = useState<"admin" | "child">("child");
   const [message, setMessage] = useState<{ type: "ok" | "error"; text: string } | null>(null);
-
-  const [campaignTitle, setCampaignTitle] = useState("");
-  const [campaignGrade, setCampaignGrade] = useState<Grade>(4);
-  const [childGrade, setChildGrade] = useState<Grade>(4);
+  const [adminPinInput, setAdminPinInput] = useState("");
+  const [adminUnlocked, setAdminUnlocked] = useState(false);
+  const [childClassGroup, setChildClassGroup] = useState<ClassGroup>("4А");
   const [loginCode, setLoginCode] = useState("");
   const [loggedChildId, setLoggedChildId] = useState<string | null>(null);
 
   useEffect(() => {
-    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(store));
+    window.localStorage.setItem(STORAGE_KEY, JSON.stringify({ ...store, campaigns: FIXED_CAMPAIGNS }));
   }, [store]);
 
   const childrenByCode = useMemo(() => new Map(store.children.map((child) => [child.accessCode, child])), [store.children]);
@@ -1096,32 +1133,18 @@ export default function Home() {
     setTimeout(() => setMessage(null), 2800);
   }
 
-  function addCampaign(e: FormEvent): void {
+  function unlockAdmin(e: FormEvent): void {
     e.preventDefault();
-    const title = campaignTitle.trim();
-    if (!title) {
-      show("error", "Введите название кампании.");
+    if (adminPinInput.trim() !== ADMIN_PIN) {
+      show("error", "Неверный PIN администратора.");
       return;
     }
-
-    const campaign: Campaign = {
-      id: uid("cmp"),
-      title,
-      grade: campaignGrade,
-      createdAt: new Date().toISOString(),
-    };
-
-    setStore((prev) => ({ ...prev, campaigns: [campaign, ...prev.campaigns] }));
-    setCampaignTitle("");
-    show("ok", "Кампания создана.");
+    setAdminUnlocked(true);
+    setAdminPinInput("");
+    show("ok", "Режим администратора открыт.");
   }
 
   function issueAccessCode(): void {
-    if (!store.campaigns.length) {
-      show("error", "Сначала создайте кампанию.");
-      return;
-    }
-
     let code = createCode();
     while (childrenByCode.has(code)) {
       code = createCode();
@@ -1130,12 +1153,13 @@ export default function Home() {
     const child: Child = {
       id: uid("ch"),
       registryId: `ANON-${Date.now().toString(36).slice(-4).toUpperCase()}-${Math.random().toString(36).slice(2, 4).toUpperCase()}`,
-      grade: childGrade,
+      grade: gradeFromClassGroup(childClassGroup),
+      classGroup: childClassGroup,
       accessCode: code,
       createdAt: new Date().toISOString(),
     };
 
-    setStore((prev) => ({ ...prev, children: [child, ...prev.children] }));
+    setStore((prev) => ({ ...prev, campaigns: FIXED_CAMPAIGNS, children: [child, ...prev.children] }));
     show("ok", `Код доступа создан: ${code}`);
   }
 
@@ -1148,39 +1172,30 @@ export default function Home() {
       return;
     }
 
+    setRole("child");
     setLoggedChildId(child.id);
     setLoginCode("");
     show("ok", `Вход выполнен. Профиль: ${child.registryId}`);
   }
 
-  function startOrResume(child: Child, campaignId: string): void {
-    const campaign = store.campaigns.find((item) => item.id === campaignId);
-    if (!campaign) {
-      show("error", "Кампания не найдена.");
-      return;
-    }
-
-    if (campaign.grade !== child.grade) {
-      show("error", "Нельзя смешивать 4 и 6 классы в одной сессии.");
-      return;
-    }
-
+  function startOrResume(child: Child): void {
+    const campaignId = child.classGroup;
     const existingCompleted = store.sessions.find(
       (session) =>
         session.childId === child.id &&
-        session.campaignId === campaign.id &&
+        session.campaignId === campaignId &&
         session.status === "completed" &&
         session.grade === child.grade,
     );
     if (existingCompleted) {
-      show("error", "Тестирование по этой кампании уже завершено. Повторный проход недоступен.");
+      show("error", "Тестирование для вашего класса уже завершено. Повторный проход недоступен.");
       return;
     }
 
     const existingActiveOrPaused = store.sessions.find(
       (session) =>
         session.childId === child.id &&
-        session.campaignId === campaign.id &&
+        session.campaignId === campaignId &&
         session.status !== "completed" &&
         session.grade === child.grade,
     );
@@ -1208,7 +1223,7 @@ export default function Home() {
     const newSession: Session = {
       id: uid("ses"),
       childId: child.id,
-      campaignId: campaign.id,
+      campaignId,
       grade: child.grade,
       status: "active",
       startedAt: new Date().toISOString(),
@@ -1278,7 +1293,7 @@ export default function Home() {
         session.status === "completed",
     );
     if (duplicateCompleted) {
-      show("error", "Для этой кампании уже есть завершенная попытка. Дублирование запрещено.");
+      show("error", "Для этого класса уже есть завершенная попытка. Дублирование запрещено.");
       return;
     }
 
@@ -1381,14 +1396,19 @@ export default function Home() {
   }
 
   function exportCodes(): void {
+    if (!adminUnlocked) {
+      show("error", "Экспорт доступен только в режиме администратора.");
+      return;
+    }
+
     if (!store.children.length) {
       show("error", "Нет кодов для экспорта.");
       return;
     }
 
     const rows = [
-      ["registryId", "grade", "accessCode", "createdAt"],
-      ...store.children.map((child) => [child.registryId, child.grade.toString(), child.accessCode, child.createdAt]),
+      ["registryId", "classGroup", "grade", "accessCode", "createdAt"],
+      ...store.children.map((child) => [child.registryId, child.classGroup, child.grade.toString(), child.accessCode, child.createdAt]),
     ];
 
     const blob = new Blob([toCsv(rows)], { type: "text/csv;charset=utf-8" });
@@ -1410,19 +1430,18 @@ export default function Home() {
     return usedIds;
   }, [store.sessions]);
 
-  const campaignSummary = store.campaigns.map((campaign) => {
+  const campaignSummary = FIXED_CAMPAIGNS.map((campaign) => {
     const items = store.sessions.filter((session) => session.campaignId === campaign.id && session.status === "completed");
     const recommendations = items.map((session) => session.adminOverride?.text || session.recommendation).filter(Boolean);
     return { campaign, done: items.length, recommendations };
   });
 
-  const childVisibleSessions = loggedChild
-    ? childSessions.filter((session) => {
-        if (session.status === "completed") return false;
-        const lockedByCompletion = childSessions.some((item) => item.campaignId === session.campaignId && item.status === "completed");
-        return !lockedByCompletion;
-      })
-    : [];
+  const activeChildSession = loggedChild
+    ? childSessions.find((session) => session.campaignId === loggedChild.classGroup && session.status !== "completed")
+    : undefined;
+  const completedChildSession = loggedChild
+    ? childSessions.find((session) => session.campaignId === loggedChild.classGroup && session.status === "completed")
+    : undefined;
 
   return (
     <div className="mx-auto min-h-screen max-w-6xl bg-slate-950 p-6 font-sans text-slate-100">
@@ -1452,235 +1471,219 @@ export default function Home() {
       )}
 
       {role === "admin" ? (
-        <section className="grid gap-6 md:grid-cols-2">
-          <article className={cardClass}>
-            <h2 className="mb-3 text-lg font-semibold text-white">Кампании</h2>
-            <form className="mb-4 grid gap-2" onSubmit={addCampaign}>
-              <input
-                className={inputClass}
-                value={campaignTitle}
-                onChange={(e) => setCampaignTitle(e.target.value)}
-                placeholder="Название кампании"
-              />
-              <label className="text-sm text-slate-200">
-                Класс
-                <select
-                  className="ml-2 rounded-md border border-slate-500 bg-slate-800 p-1 text-slate-100"
-                  value={campaignGrade}
-                  onChange={(e) => setCampaignGrade(Number(e.target.value) as Grade)}
-                >
-                  <option value={4}>4 класс</option>
-                  <option value={6}>6 класс</option>
-                </select>
-              </label>
-              <button className={buttonPrimaryClass} type="submit">
-                Создать кампанию
-              </button>
-            </form>
-            <ul className="space-y-2 text-sm">
-              {store.campaigns.map((campaign) => (
-                <li className="rounded-md border border-slate-700 bg-slate-900 p-2" key={campaign.id}>
-                  {campaign.title} · {campaign.grade} класс
-                </li>
-              ))}
-              {!store.campaigns.length && <li className="text-slate-400">Кампаний пока нет.</li>}
-            </ul>
-          </article>
-
-          <article className={cardClass}>
-            <h2 className="mb-3 text-lg font-semibold text-white">Анонимный реестр / коды доступа</h2>
-            <div className="mb-3">
-              <label className="text-sm text-slate-200">
-                Класс ученика
-                <select
-                  className="ml-2 rounded-md border border-slate-500 bg-slate-800 p-1 text-slate-100"
-                  value={childGrade}
-                  onChange={(e) => setChildGrade(Number(e.target.value) as Grade)}
-                >
-                  <option value={4}>4 класс</option>
-                  <option value={6}>6 класс</option>
-                </select>
-              </label>
-            </div>
-            <div className="mb-3 flex flex-wrap gap-2">
-              <button className={buttonPrimaryClass} onClick={issueAccessCode} type="button">
-                Выдать код доступа
-              </button>
-              <button className={buttonSecondaryClass} onClick={exportCodes} type="button">
-                Экспорт кодов (CSV)
-              </button>
-            </div>
-            <div className="max-h-60 overflow-auto rounded-md border border-slate-600">
-              <table className="w-full text-left text-sm text-slate-100">
-                <thead className="bg-slate-800 text-slate-100">
-                  <tr>
-                    <th className="p-2">Registry ID</th>
-                    <th className="p-2">Класс</th>
-                    <th className="p-2">Код</th>
-                    <th className="p-2">Статус кода</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {store.children.map((child) => {
-                    const status = accessCodeStatus(child, store.sessions);
-                    const shouldMask = hasChildUsedCode.has(child.id) || status === "Завершён";
-                    return (
-                      <tr className="border-t border-slate-700" key={child.id}>
-                        <td className="p-2">{child.registryId}</td>
-                        <td className="p-2">{child.grade}</td>
-                        <td className="p-2 font-mono text-sky-300">{shouldMask ? maskAccessCode(child.accessCode) : child.accessCode}</td>
-                        <td className="p-2">{status}</td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-            </div>
-          </article>
-
-          <article className={`${cardClass} md:col-span-2`}>
-            <h2 className="mb-3 text-lg font-semibold text-white">Пауза / незавершенные сессии</h2>
-            <ul className="space-y-2 text-sm">
-              {incompleteSessions.map((session) => {
-                const child = store.children.find((item) => item.id === session.childId);
-                const campaign = store.campaigns.find((item) => item.id === session.campaignId);
-                return (
-                  <li className="rounded-md border border-slate-700 bg-slate-900 p-2" key={session.id}>
-                    {campaign?.title ?? "Кампания удалена"} · {child?.registryId ?? "Профиль удалён"} · {session.grade} класс · статус: {" "}
-                    {adminStatusLabel(session)}
+        !adminUnlocked ? (
+          <section className="grid gap-6">
+            <article className={cardClass}>
+              <h2 className="mb-3 text-lg font-semibold text-white">Вход администратора</h2>
+              <p className="mb-3 text-sm text-slate-300">Для просмотра админ-панелей введите PIN.</p>
+              <form className="flex flex-wrap gap-2" onSubmit={unlockAdmin}>
+                <input
+                  className={inputClass}
+                  value={adminPinInput}
+                  onChange={(e) => setAdminPinInput(e.target.value)}
+                  placeholder="PIN администратора"
+                  type="password"
+                />
+                <button className={buttonPrimaryClass} type="submit">
+                  Открыть админ-режим
+                </button>
+              </form>
+            </article>
+          </section>
+        ) : (
+          <section className="grid gap-6 md:grid-cols-2">
+            <article className={cardClass}>
+              <h2 className="mb-3 text-lg font-semibold text-white">Классы тестирования</h2>
+              <ul className="space-y-2 text-sm">
+                {FIXED_CAMPAIGNS.map((campaign) => (
+                  <li className="rounded-md border border-slate-700 bg-slate-900 p-2" key={campaign.id}>
+                    {campaign.title}
                   </li>
-                );
-              })}
-              {!incompleteSessions.length && <li className="text-slate-400">Нет незавершенных сессий.</li>}
-            </ul>
-          </article>
+                ))}
+              </ul>
+            </article>
 
-          <article className={`${cardClass} md:col-span-2`}>
-            <h2 className="mb-3 text-lg font-semibold text-white">Завершенные сессии и ручная проверка</h2>
-            <ul className="space-y-3">
-              {completedSessions.map((session) => {
-                const child = store.children.find((item) => item.id === session.childId);
-                const campaign = store.campaigns.find((item) => item.id === session.campaignId);
-                const recommendation = session.adminOverride?.text || session.recommendation;
+            <article className={cardClass}>
+              <h2 className="mb-3 text-lg font-semibold text-white">Анонимный реестр / коды доступа</h2>
+              <div className="mb-3">
+                <label className="text-sm text-slate-200">
+                  Класс ученика
+                  <select
+                    className="ml-2 rounded-md border border-slate-500 bg-slate-800 p-1 text-slate-100"
+                    value={childClassGroup}
+                    onChange={(e) => setChildClassGroup(e.target.value as ClassGroup)}
+                  >
+                    {CLASS_GROUPS.map((group) => (
+                      <option key={group} value={group}>
+                        {group}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              </div>
+              <div className="mb-3 flex flex-wrap gap-2">
+                <button className={buttonPrimaryClass} onClick={issueAccessCode} type="button">
+                  Выдать код доступа
+                </button>
+                <button className={buttonSecondaryClass} onClick={exportCodes} type="button">
+                  Экспорт кодов (CSV)
+                </button>
+              </div>
+              <div className="max-h-60 overflow-auto rounded-md border border-slate-600">
+                <table className="w-full text-left text-sm text-slate-100">
+                  <thead className="bg-slate-800 text-slate-100">
+                    <tr>
+                      <th className="p-2">Registry ID</th>
+                      <th className="p-2">Класс</th>
+                      <th className="p-2">Код</th>
+                      <th className="p-2">Статус кода</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {store.children.map((child) => {
+                      const status = accessCodeStatus(child, store.sessions);
+                      const shouldMask = hasChildUsedCode.has(child.id) || status === "Завершён";
+                      return (
+                        <tr className="border-t border-slate-700" key={child.id}>
+                          <td className="p-2">{child.registryId}</td>
+                          <td className="p-2">{child.classGroup}</td>
+                          <td className="p-2 font-mono text-sky-300">{shouldMask ? maskAccessCode(child.accessCode) : child.accessCode}</td>
+                          <td className="p-2">{status}</td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            </article>
 
-                return (
-                  <li className="rounded-md border border-slate-700 bg-slate-900 p-3" key={session.id}>
-                    <p className="text-sm text-slate-200">
-                      {campaign?.title ?? "Кампания удалена"} · {child?.registryId ?? "Профиль удалён"} · {session.grade} класс
-                    </p>
-                    <p className="mb-1 text-xs uppercase tracking-wide text-amber-300">Статус: {adminStatusLabel(session)}</p>
-                    <p className="mb-3 text-sm text-slate-100">Итоговая рекомендация: {recommendation || "—"}</p>
+            <article className={`${cardClass} md:col-span-2`}>
+              <h2 className="mb-3 text-lg font-semibold text-white">Пауза / незавершенные сессии</h2>
+              <ul className="space-y-2 text-sm">
+                {incompleteSessions.map((session) => {
+                  const child = store.children.find((item) => item.id === session.childId);
+                  return (
+                    <li className="rounded-md border border-slate-700 bg-slate-900 p-2" key={session.id}>
+                      {session.campaignId} · {child?.registryId ?? "Профиль удалён"} · статус: {adminStatusLabel(session)}
+                    </li>
+                  );
+                })}
+                {!incompleteSessions.length && <li className="text-slate-400">Нет незавершенных сессий.</li>}
+              </ul>
+            </article>
 
-                    <div className="mb-3 overflow-x-auto rounded-md border border-slate-700">
-                      <table className="w-full text-left text-xs text-slate-100 md:text-sm">
-                        <thead className="bg-slate-800">
-                          <tr>
-                            <th className="p-2">Домен</th>
-                            <th className="p-2">Raw score</th>
-                            <th className="p-2">Scaled score</th>
-                            <th className="p-2">Длительность</th>
-                            <th className="p-2">Краткая интерпретация</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {BATTERIES[session.grade].map((battery) => {
-                            const score = session.scores.find((item) => item.batteryId === battery.id);
-                            return (
-                              <tr className="border-t border-slate-700" key={`${session.id}-${battery.id}`}>
-                                <td className="p-2">{battery.shortTitle}</td>
-                                <td className="p-2">{score?.rawScore ?? 0}% ({score?.correct ?? 0}/{score?.answered ?? 0})</td>
-                                <td className="p-2">{score?.scaledScore ?? 1}/10</td>
-                                <td className="p-2">{score?.durationSec ?? 0} сек</td>
-                                <td className="p-2">{score?.interpretation ?? "—"}</td>
-                              </tr>
-                            );
-                          })}
-                        </tbody>
-                      </table>
-                    </div>
+            <article className={`${cardClass} md:col-span-2`}>
+              <h2 className="mb-3 text-lg font-semibold text-white">Завершенные сессии и ручная проверка</h2>
+              <ul className="space-y-3">
+                {completedSessions.map((session) => {
+                  const child = store.children.find((item) => item.id === session.childId);
+                  const recommendation = session.adminOverride?.text || session.recommendation;
 
-                    <div className="flex flex-wrap gap-2">
-                      <input
-                        className={`${inputClass} min-w-80 text-sm`}
-                        defaultValue={session.adminOverride?.text || ""}
-                        placeholder="Ручная корректировка рекомендации"
-                        onBlur={(e) => {
-                          if (!e.target.value.trim()) return;
-                          adminOverride(session.id, e.target.value);
-                        }}
-                      />
-                      <span className="text-xs text-slate-400">Сохранение при выходе из поля.</span>
-                    </div>
-                    <details className="mt-3 rounded-md border border-amber-700/70 bg-amber-950/20 p-3">
-                      <summary className="cursor-pointer text-sm font-semibold text-amber-200">Действия администратора (восстановление)</summary>
-                      <p className="mt-2 text-xs text-amber-100">
-                        Внимание: эти действия аварийные и могут снова открыть доступ к завершенной попытке.
+                  return (
+                    <li className="rounded-md border border-slate-700 bg-slate-900 p-3" key={session.id}>
+                      <p className="text-sm text-slate-200">
+                        {session.campaignId} · {child?.registryId ?? "Профиль удалён"}
                       </p>
-                      <div className="mt-3 flex flex-wrap gap-2">
-                        <button
-                          className="rounded-md border border-amber-300 bg-amber-900/40 px-3 py-2 text-slate-100 hover:bg-amber-800/50"
-                          onClick={() => reopenSession(session.id)}
-                          type="button"
-                        >
-                          Переоткрыть попытку (админ)
-                        </button>
-                        <button
-                          className="rounded-md border border-rose-300 bg-rose-900/40 px-3 py-2 text-slate-100 hover:bg-rose-800/50"
-                          onClick={() => resetSession(session.id)}
-                          type="button"
-                        >
-                          Сбросить попытку (админ)
-                        </button>
-                      </div>
-                    </details>
-                  </li>
-                );
-              })}
-              {!completedSessions.length && <li className="text-slate-400">Завершенных сессий пока нет.</li>}
-            </ul>
-          </article>
+                      <p className="mb-1 text-xs uppercase tracking-wide text-amber-300">Статус: {adminStatusLabel(session)}</p>
+                      <p className="mb-3 text-sm text-slate-100">Итоговая рекомендация: {recommendation || "—"}</p>
 
-          <article className={`${cardClass} md:col-span-2`}>
-            <h2 className="mb-3 text-lg font-semibold text-white">Итоговые рекомендации по кампаниям</h2>
-            <ul className="space-y-3 text-sm">
-              {campaignSummary.map((item) => (
-                <li key={item.campaign.id} className="rounded-md border border-slate-700 bg-slate-900 p-2">
-                  <p className="font-medium text-slate-100">
-                    {item.campaign.title} ({item.campaign.grade} класс) — завершено: {item.done}
-                  </p>
-                  <ul className="list-disc pl-5 text-slate-200">
-                    {item.recommendations.length ? (
-                      item.recommendations.map((text, index) => <li key={`${item.campaign.id}-${index}`}>{text}</li>)
-                    ) : (
-                      <li>Рекомендаций пока нет.</li>
-                    )}
-                  </ul>
-                </li>
-              ))}
-              {!campaignSummary.length && <li className="text-slate-400">Кампаний пока нет.</li>}
-            </ul>
-          </article>
-        </section>
+                      <div className="mb-3 overflow-x-auto rounded-md border border-slate-700">
+                        <table className="w-full text-left text-xs text-slate-100 md:text-sm">
+                          <thead className="bg-slate-800">
+                            <tr>
+                              <th className="p-2">Домен</th>
+                              <th className="p-2">Raw score</th>
+                              <th className="p-2">Scaled score</th>
+                              <th className="p-2">Длительность</th>
+                              <th className="p-2">Краткая интерпретация</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {BATTERIES[session.grade].map((battery) => {
+                              const score = session.scores.find((item) => item.batteryId === battery.id);
+                              return (
+                                <tr className="border-t border-slate-700" key={`${session.id}-${battery.id}`}>
+                                  <td className="p-2">{battery.shortTitle}</td>
+                                  <td className="p-2">{score?.rawScore ?? 0}% ({score?.correct ?? 0}/{score?.answered ?? 0})</td>
+                                  <td className="p-2">{score?.scaledScore ?? 1}/10</td>
+                                  <td className="p-2">{score?.durationSec ?? 0} сек</td>
+                                  <td className="p-2">{score?.interpretation ?? "—"}</td>
+                                </tr>
+                              );
+                            })}
+                          </tbody>
+                        </table>
+                      </div>
+
+                      <div className="flex flex-wrap gap-2">
+                        <input
+                          className={`${inputClass} min-w-80 text-sm`}
+                          defaultValue={session.adminOverride?.text || ""}
+                          placeholder="Ручная корректировка рекомендации"
+                          onBlur={(e) => {
+                            if (!e.target.value.trim()) return;
+                            adminOverride(session.id, e.target.value);
+                          }}
+                        />
+                        <span className="text-xs text-slate-400">Сохранение при выходе из поля.</span>
+                      </div>
+                      <details className="mt-3 rounded-md border border-amber-700/70 bg-amber-950/20 p-3">
+                        <summary className="cursor-pointer text-sm font-semibold text-amber-200">Действия администратора (восстановление)</summary>
+                        <p className="mt-2 text-xs text-amber-100">Внимание: эти действия аварийные и могут снова открыть доступ к завершенной попытке.</p>
+                        <div className="mt-3 flex flex-wrap gap-2">
+                          <button
+                            className="rounded-md border border-amber-300 bg-amber-900/40 px-3 py-2 text-slate-100 hover:bg-amber-800/50"
+                            onClick={() => reopenSession(session.id)}
+                            type="button"
+                          >
+                            Переоткрыть попытку (админ)
+                          </button>
+                          <button
+                            className="rounded-md border border-rose-300 bg-rose-900/40 px-3 py-2 text-slate-100 hover:bg-rose-800/50"
+                            onClick={() => resetSession(session.id)}
+                            type="button"
+                          >
+                            Сбросить попытку (админ)
+                          </button>
+                        </div>
+                      </details>
+                    </li>
+                  );
+                })}
+                {!completedSessions.length && <li className="text-slate-400">Завершенных сессий пока нет.</li>}
+              </ul>
+            </article>
+
+            <article className={`${cardClass} md:col-span-2`}>
+              <h2 className="mb-3 text-lg font-semibold text-white">Итоговые рекомендации по классам</h2>
+              <ul className="space-y-3 text-sm">
+                {campaignSummary.map((item) => (
+                  <li key={item.campaign.id} className="rounded-md border border-slate-700 bg-slate-900 p-2">
+                    <p className="font-medium text-slate-100">{item.campaign.title} — завершено: {item.done}</p>
+                    <ul className="list-disc pl-5 text-slate-200">
+                      {item.recommendations.length ? item.recommendations.map((text, index) => <li key={`${item.campaign.id}-${index}`}>{text}</li>) : <li>Рекомендаций пока нет.</li>}
+                    </ul>
+                  </li>
+                ))}
+              </ul>
+            </article>
+          </section>
+        )
       ) : (
         <section className="grid gap-6">
           <article className={cardClass}>
             <h2 className="mb-3 text-lg font-semibold text-white">Вход ученика по коду</h2>
             {!loggedChild ? (
               <form className="flex flex-wrap gap-2" onSubmit={loginChild}>
-                <input
-                  className={inputClass}
-                  value={loginCode}
-                  onChange={(e) => setLoginCode(e.target.value)}
-                  placeholder="Введите код доступа"
-                />
+                <input className={inputClass} value={loginCode} onChange={(e) => setLoginCode(e.target.value)} placeholder="Введите код доступа" />
                 <button className={buttonPrimaryClass} type="submit">
                   Войти
                 </button>
               </form>
             ) : (
-              <div className="flex items-center gap-3 text-sm text-slate-100">
+              <div className="flex flex-wrap items-center gap-3 text-sm text-slate-100">
                 <p>
-                  Активный профиль: <strong>{loggedChild.registryId}</strong> ({loggedChild.grade} класс)
+                  Активный профиль: <strong>{loggedChild.registryId}</strong> · класс <strong>{loggedChild.classGroup}</strong>
                 </p>
                 <button className={buttonSecondaryClass} onClick={() => setLoggedChildId(null)} type="button">
                   Выйти
@@ -1691,159 +1694,92 @@ export default function Home() {
 
           {loggedChild && (
             <article className={cardClass}>
-              <h2 className="mb-3 text-lg font-semibold text-white">Мои кампании и сессии</h2>
-              <ul className="mb-4 space-y-2">
-                {store.campaigns.map((campaign) => {
-                  const invalid = campaign.grade !== loggedChild.grade;
-                  const completedLocked = childSessions.find(
-                    (session) =>
-                      session.campaignId === campaign.id &&
-                      session.status === "completed" &&
-                      session.grade === loggedChild.grade,
-                  );
-                  const ownSession = childSessions.find(
-                    (session) =>
-                      session.campaignId === campaign.id &&
-                      session.status !== "completed" &&
-                      session.grade === loggedChild.grade,
-                  );
+              <h2 className="mb-3 text-lg font-semibold text-white">Моя сессия</h2>
+              <p className="mb-3 text-sm text-slate-300">Доступный класс тестирования: {loggedChild.classGroup}</p>
 
-                  return (
-                    <li className="flex flex-wrap items-center gap-2 rounded-md border border-slate-700 bg-slate-900 p-2" key={campaign.id}>
-                      <span className="text-slate-100">
-                        {campaign.title} · {campaign.grade} класс
-                      </span>
-                      {!completedLocked && (
-                        <button
-                          className={buttonSecondaryClass}
-                          disabled={invalid}
-                          onClick={() => startOrResume(loggedChild, campaign.id)}
-                          type="button"
-                        >
-                          {ownSession ? "Продолжить" : "Начать"}
-                        </button>
-                      )}
-                      {invalid && <span className="text-xs text-rose-300">Недоступно: другой класс.</span>}
-                      {completedLocked && (
-                        <span className="text-xs text-amber-300">
-                          Тестирование по этой кампании уже завершено. Повторный проход недоступен.
-                        </span>
-                      )}
-                    </li>
-                  );
-                })}
-              </ul>
+              {!activeChildSession && !completedChildSession && (
+                <button className={buttonPrimaryClass} onClick={() => startOrResume(loggedChild)} type="button">
+                  Начать тестирование
+                </button>
+              )}
 
-              <div className="space-y-3">
-                {childVisibleSessions.map((session) => {
-                    const campaign = store.campaigns.find((item) => item.id === session.campaignId);
-                    const questions = QUESTION_SETS[session.grade];
-                    const question = questions[session.currentQuestionIndex];
-                    const progressPct = Math.round((session.answers.length / questions.length) * 100);
-                    const batteries = BATTERIES[session.grade];
-                    const currentBattery = question ? batteries.find((item) => item.id === question.batteryId) : null;
+              {completedChildSession && (
+                <p className="rounded-md border border-amber-600 bg-amber-950/40 p-3 text-sm text-amber-100">
+                  Состояние: тестирование по классу {loggedChild.classGroup} завершено. Повторный проход недоступен.
+                </p>
+              )}
 
-                    return (
-                      <div className="rounded-lg border border-slate-600 bg-slate-900 p-3" key={session.id}>
-                        <p className="mb-2 font-medium text-white">
-                          {campaign?.title ?? "Кампания"} · {session.grade} класс · статус: {session.status}
-                        </p>
-                        <p className="mb-2 text-sm text-slate-200">
-                          Прогресс батареи: {session.answers.length} / {questions.length} ({progressPct}%)
-                        </p>
+              {activeChildSession && (() => {
+                const questions = QUESTION_SETS[activeChildSession.grade];
+                const question = questions[activeChildSession.currentQuestionIndex];
+                const progressPct = Math.round((activeChildSession.answers.length / questions.length) * 100);
+                const batteries = BATTERIES[activeChildSession.grade];
+                const currentBattery = question ? batteries.find((item) => item.id === question.batteryId) : null;
 
-                        <div className="mb-3 grid gap-2 md:grid-cols-3">
-                          {batteries.map((battery) => {
-                            const batteryQuestions = questions.filter((q) => q.batteryId === battery.id);
-                            const answeredCount = session.answers.filter((answer) => answer.batteryId === battery.id).length;
-                            const finished = answeredCount >= batteryQuestions.length;
-                            return (
-                              <div
-                                key={`${session.id}-${battery.id}`}
-                                className={`rounded-md border p-2 text-xs ${
-                                  finished
-                                    ? "border-emerald-500 bg-emerald-900/20 text-emerald-200"
-                                    : "border-slate-600 bg-slate-800 text-slate-200"
-                                }`}
-                              >
-                                <p className="font-semibold">{battery.blockTitle}</p>
-                                <p>
-                                  Выполнено: {answeredCount}/{batteryQuestions.length}
-                                </p>
-                              </div>
-                            );
-                          })}
-                        </div>
+                return (
+                  <div className="rounded-lg border border-slate-600 bg-slate-900 p-3">
+                    <p className="mb-2 font-medium text-white">
+                      {loggedChild.classGroup} · статус: {activeChildSession.status === "active" ? "в процессе" : "на паузе"}
+                    </p>
+                    <p className="mb-2 text-sm text-slate-200">Прогресс батареи: {activeChildSession.answers.length} / {questions.length} ({progressPct}%)</p>
 
-                        {question ? (
-                          <div className="rounded-md border border-slate-500 bg-slate-800 p-3">
-                            <p className="mb-1 text-xs font-semibold uppercase tracking-wide text-sky-300">
-                              {currentBattery?.blockTitle}
-                            </p>
-                            <p className="mb-3 text-base text-slate-100">{question.prompt}</p>
-                            <div className="grid gap-2">
-                              {question.options.map((option, idx) => (
-                                <button
-                                  key={`${question.id}-${idx}`}
-                                  type="button"
-                                  className="w-full rounded-md border border-slate-500 bg-slate-900 px-3 py-2 text-left text-slate-100 hover:border-sky-400 hover:bg-slate-700"
-                                  onClick={() => answerQuestion(session.id, idx)}
-                                >
-                                  {option}
-                                </button>
-                              ))}
-                            </div>
-                          </div>
-                        ) : (
-                          <p className="rounded-md border border-emerald-600 bg-emerald-950 p-3 text-sm text-emerald-200">
-                            Все 3 блока завершены. Можно завершить диагностическую сессию.
-                          </p>
-                        )}
-
-                        <div className="mt-2 flex gap-2">
-                          <button className={buttonSecondaryClass} onClick={() => pauseSession(session.id)} type="button">
-                            Сохранить и поставить на паузу
-                          </button>
-                          <button
-                            className="rounded-md bg-emerald-600 px-3 py-2 text-sm font-medium text-white hover:bg-emerald-500"
-                            onClick={() => completeSession(session.id)}
-                            type="button"
+                    <div className="mb-3 grid gap-2 md:grid-cols-3">
+                      {batteries.map((battery) => {
+                        const batteryQuestions = questions.filter((q) => q.batteryId === battery.id);
+                        const answeredCount = activeChildSession.answers.filter((answer) => answer.batteryId === battery.id).length;
+                        const finished = answeredCount >= batteryQuestions.length;
+                        return (
+                          <div
+                            key={`${activeChildSession.id}-${battery.id}`}
+                            className={`rounded-md border p-2 text-xs ${
+                              finished ? "border-emerald-500 bg-emerald-900/20 text-emerald-200" : "border-slate-600 bg-slate-800 text-slate-200"
+                            }`}
                           >
-                            Завершить тестирование
-                          </button>
+                            <p className="font-semibold">{battery.blockTitle}</p>
+                            <p>Выполнено: {answeredCount}/{batteryQuestions.length}</p>
+                          </div>
+                        );
+                      })}
+                    </div>
+
+                    {question ? (
+                      <div className="rounded-md border border-slate-500 bg-slate-800 p-3">
+                        <p className="mb-1 text-xs font-semibold uppercase tracking-wide text-sky-300">{currentBattery?.blockTitle}</p>
+                        <p className="mb-3 text-base text-slate-100">{question.prompt}</p>
+                        <div className="grid gap-2">
+                          {question.options.map((option, idx) => (
+                            <button
+                              key={`${question.id}-${idx}`}
+                              type="button"
+                              className="w-full rounded-md border border-slate-500 bg-slate-900 px-3 py-2 text-left text-slate-100 hover:border-sky-400 hover:bg-slate-700"
+                              onClick={() => answerQuestion(activeChildSession.id, idx)}
+                            >
+                              {option}
+                            </button>
+                          ))}
                         </div>
                       </div>
-                    );
-                  })}
-                {!childVisibleSessions.length && (
-                  <p className="text-sm text-slate-400">Активных или паузных сессий нет.</p>
-                )}
-                {store.campaigns
-                  .filter((campaign) =>
-                    childSessions.some((session) => session.campaignId === campaign.id && session.status === "completed"),
-                  )
-                  .map((campaign) => (
-                    <p
-                      key={`locked-${campaign.id}`}
-                      className="rounded-md border border-amber-600 bg-amber-950/40 p-3 text-sm text-amber-100"
-                    >
-                      {campaign.title}: Тестирование по этой кампании уже завершено. Повторный проход недоступен.
-                    </p>
-                  ))}
-              </div>
+                    ) : (
+                      <p className="rounded-md border border-emerald-600 bg-emerald-950 p-3 text-sm text-emerald-200">
+                        Все 3 блока завершены. Можно завершить диагностическую сессию.
+                      </p>
+                    )}
 
-              <div className="mt-5 rounded-md border border-slate-600 bg-slate-900 p-3">
-                <h3 className="mb-2 font-semibold text-white">Завершенные сессии</h3>
-                <ul className="space-y-1 text-sm text-slate-200">
-                  {childSessions
-                    .filter((session) => session.status === "completed")
-                    .map((session) => {
-                      const campaign = store.campaigns.find((item) => item.id === session.campaignId);
-                      return <li key={session.id}>{campaign?.title ?? "Кампания"}: Диагностика завершена.</li>;
-                    })}
-                  {!childSessions.filter((session) => session.status === "completed").length && <li>Пока нет завершенных сессий.</li>}
-                </ul>
-              </div>
+                    <div className="mt-2 flex gap-2">
+                      <button className={buttonSecondaryClass} onClick={() => pauseSession(activeChildSession.id)} type="button">
+                        Сохранить и поставить на паузу
+                      </button>
+                      <button
+                        className="rounded-md bg-emerald-600 px-3 py-2 text-sm font-medium text-white hover:bg-emerald-500"
+                        onClick={() => completeSession(activeChildSession.id)}
+                        type="button"
+                      >
+                        Завершить тестирование
+                      </button>
+                    </div>
+                  </div>
+                );
+              })()}
             </article>
           )}
         </section>
