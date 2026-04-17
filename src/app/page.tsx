@@ -23,13 +23,20 @@ type Campaign = {
 
 type SessionScore = {
   batteryId: string;
-  value: number;
+  rawScore: number;
+  scaledScore: number;
+  durationSec: number;
+  interpretation: string;
+  answered: number;
+  correct: number;
 };
 
 type SessionAnswer = {
   questionId: string;
+  batteryId: string;
   choiceIndex: number;
   isCorrect: boolean;
+  answeredAt: string;
 };
 
 type RecommendationOverride = {
@@ -64,126 +71,448 @@ type Store = {
 type Question = {
   id: string;
   batteryId: string;
-  batteryLabel: string;
   prompt: string;
   options: string[];
   correctIndex: number;
 };
 
+type BatteryDefinition = {
+  id: string;
+  blockTitle: string;
+  shortTitle: string;
+  min: number;
+  max: number;
+};
+
 const STORAGE_KEY = "school-profiler-store-v1";
 
-const BATTERIES: Record<Grade, { id: string; label: string; min: number; max: number }[]> = {
+const BATTERIES: Record<Grade, BatteryDefinition[]> = {
   4: [
-    { id: "reading", label: "Чтение", min: 0, max: 100 },
-    { id: "math", label: "Математика", min: 0, max: 100 },
-    { id: "attention", label: "Внимание", min: 0, max: 100 },
+    { id: "intelligence_4", blockTitle: "Блок 1 из 3: Интеллект", shortTitle: "Интеллект", min: 0, max: 100 },
+    { id: "logic_4", blockTitle: "Блок 2 из 3: Логика", shortTitle: "Логика", min: 0, max: 100 },
+    {
+      id: "math_aptitude_4",
+      blockTitle: "Блок 3 из 3: Способность к математике",
+      shortTitle: "Способность к математике",
+      min: 0,
+      max: 100,
+    },
   ],
   6: [
-    { id: "algebra", label: "Алгебра", min: 0, max: 100 },
-    { id: "logic", label: "Логика", min: 0, max: 100 },
-    { id: "reading6", label: "Понимание текста", min: 0, max: 100 },
+    { id: "intelligence_6", blockTitle: "Блок 1 из 3: Интеллект", shortTitle: "Интеллект", min: 0, max: 100 },
+    { id: "logic_6", blockTitle: "Блок 2 из 3: Логика", shortTitle: "Логика", min: 0, max: 100 },
+    {
+      id: "math_aptitude_6",
+      blockTitle: "Блок 3 из 3: Способность к математике",
+      shortTitle: "Способность к математике",
+      min: 0,
+      max: 100,
+    },
   ],
 };
 
 const QUESTION_SETS: Record<Grade, Question[]> = {
   4: [
     {
-      id: "g4-r1",
-      batteryId: "reading",
-      batteryLabel: "Чтение",
-      prompt: "Выбери предложение, где слово 'лес' употреблено правильно.",
-      options: ["Лес плывёт по реке.", "Мы гуляли в лесу.", "Лес варится в кастрюле.", "Лес едет на автобусе."],
+      id: "g4-i1",
+      batteryId: "intelligence_4",
+      prompt: "Какой фрагмент завершает узор: круг, квадрат, круг, квадрат, ...?",
+      options: ["круг", "треугольник", "звезда", "овал"],
+      correctIndex: 0,
+    },
+    {
+      id: "g4-i2",
+      batteryId: "intelligence_4",
+      prompt: "В матрице фигуры увеличиваются по числу углов: 3, 4, 5, ?. Что дальше?",
+      options: ["круг", "шестиугольник", "квадрат", "пятиугольник"],
       correctIndex: 1,
     },
     {
-      id: "g4-r2",
-      batteryId: "reading",
-      batteryLabel: "Чтение",
-      prompt: "Что является главной мыслью текста: 'Осенью птицы улетают в тёплые края'?",
-      options: ["Птицы любят зиму.", "Осенью птицы мигрируют.", "Птицы не умеют летать.", "Осенью птицы спят."],
+      id: "g4-i3",
+      batteryId: "intelligence_4",
+      prompt: "Какой рисунок должен быть вместо пропуска: ▲ ▼ ▲ ▼ ...?",
+      options: ["▲", "■", "●", "→"],
+      correctIndex: 0,
+    },
+    {
+      id: "g4-i4",
+      batteryId: "intelligence_4",
+      prompt: "Если фигура поворачивается на четверть круга каждый шаг, где она окажется на 4-м шаге?",
+      options: ["слева", "в исходном положении", "вверх ногами", "справа"],
+      correctIndex: 1,
+    },
+    {
+      id: "g4-i5",
+      batteryId: "intelligence_4",
+      prompt: "Какой элемент лишний: ⚪, ⚪, ⚪, 🔺?",
+      options: ["первый", "второй", "третий", "четвёртый"],
+      correctIndex: 3,
+    },
+    {
+      id: "g4-i6",
+      batteryId: "intelligence_4",
+      prompt: "Продолжи узор: 1 точка, 2 точки, 3 точки, ...",
+      options: ["2 точки", "3 точки", "4 точки", "5 точек"],
+      correctIndex: 2,
+    },
+    {
+      id: "g4-i7",
+      batteryId: "intelligence_4",
+      prompt: "Если квадрат разделён на 4 части и убрали одну, сколько частей осталось?",
+      options: ["1", "2", "3", "4"],
+      correctIndex: 2,
+    },
+    {
+      id: "g4-i8",
+      batteryId: "intelligence_4",
+      prompt: "В ряду фигур: круг, треугольник, квадрат, круг, треугольник, ... что дальше?",
+      options: ["круг", "квадрат", "ромб", "звезда"],
+      correctIndex: 1,
+    },
+    {
+      id: "g4-i9",
+      batteryId: "intelligence_4",
+      prompt: "В таблице 2x2 все стрелки смотрят вправо, кроме одной. Какая должна быть в пропуске, чтобы правило сохранилось?",
+      options: ["вправо", "влево", "вверх", "вниз"],
+      correctIndex: 0,
+    },
+    {
+      id: "g4-l1",
+      batteryId: "logic_4",
+      prompt: "Найди лишнее: яблоко, груша, слива, стул.",
+      options: ["яблоко", "груша", "слива", "стул"],
+      correctIndex: 3,
+    },
+    {
+      id: "g4-l2",
+      batteryId: "logic_4",
+      prompt: "Заверши порядок: понедельник, вторник, среда, ...",
+      options: ["пятница", "четверг", "суббота", "воскресенье"],
+      correctIndex: 1,
+    },
+    {
+      id: "g4-l3",
+      batteryId: "logic_4",
+      prompt: "Аналогия: котёнок относится к кошке так же, как щенок к ...",
+      options: ["собаке", "корове", "кошке", "лисе"],
+      correctIndex: 0,
+    },
+    {
+      id: "g4-l4",
+      batteryId: "logic_4",
+      prompt: "Все карандаши — предметы для письма. Синий предмет — карандаш. Что верно?",
+      options: ["Синий предмет — игрушка", "Синий предмет — для письма", "Синий предмет — книга", "Ничего нельзя сказать"],
+      correctIndex: 1,
+    },
+    {
+      id: "g4-l5",
+      batteryId: "logic_4",
+      prompt: "Если А больше Б, а Б больше В, кто самый маленький?",
+      options: ["А", "Б", "В", "Определить нельзя"],
+      correctIndex: 2,
+    },
+    {
+      id: "g4-l6",
+      batteryId: "logic_4",
+      prompt: "Какое правило лучше подходит: 2, 4, 8, 16, ...",
+      options: ["прибавить 2", "умножить на 2", "умножить на 3", "вычесть 2"],
+      correctIndex: 1,
+    },
+    {
+      id: "g4-l7",
+      batteryId: "logic_4",
+      prompt: "Сначала идёт маленький, потом средний, потом большой. Какой следующий, если порядок повторяется?",
+      options: ["большой", "средний", "маленький", "любой"],
+      correctIndex: 2,
+    },
+    {
+      id: "g4-l8",
+      batteryId: "logic_4",
+      prompt: "Если дождь идёт, улица мокрая. Улица мокрая. Что точно можно сказать?",
+      options: ["Точно был дождь", "Мокрая улица может быть и по другой причине", "Дождя не было", "Улица сухая"],
+      correctIndex: 1,
+    },
+    {
+      id: "g4-l9",
+      batteryId: "logic_4",
+      prompt: "Книга : читать = мяч : ...",
+      options: ["бежать", "играть", "рисовать", "прыгать"],
       correctIndex: 1,
     },
     {
       id: "g4-m1",
-      batteryId: "math",
-      batteryLabel: "Математика",
-      prompt: "Сколько будет 48 + 27?",
-      options: ["65", "75", "85", "74"],
-      correctIndex: 1,
+      batteryId: "math_aptitude_4",
+      prompt: "Какое число ближе к 100: 97 или 92?",
+      options: ["97", "92", "одинаково", "нельзя сравнить"],
+      correctIndex: 0,
     },
     {
       id: "g4-m2",
-      batteryId: "math",
-      batteryLabel: "Математика",
-      prompt: "У Маши 5 тетрадей, у Пети в 2 раза больше. Сколько у Пети?",
+      batteryId: "math_aptitude_4",
+      prompt: "Если 1 шоколадка стоит 20 рублей, сколько стоят 3 шоколадки?",
+      options: ["40", "50", "60", "70"],
+      correctIndex: 2,
+    },
+    {
+      id: "g4-m3",
+      batteryId: "math_aptitude_4",
+      prompt: "Продолжи числовой узор: 5, 10, 15, ...",
+      options: ["18", "20", "22", "25"],
+      correctIndex: 1,
+    },
+    {
+      id: "g4-m4",
+      batteryId: "math_aptitude_4",
+      prompt: "Что больше: 3/4 или 2/4?",
+      options: ["3/4", "2/4", "равны", "сравнить нельзя"],
+      correctIndex: 0,
+    },
+    {
+      id: "g4-m5",
+      batteryId: "math_aptitude_4",
+      prompt: "У Пети 12 карандашей, у Оли на 4 меньше. Сколько у Оли?",
+      options: ["6", "7", "8", "9"],
+      correctIndex: 2,
+    },
+    {
+      id: "g4-m6",
+      batteryId: "math_aptitude_4",
+      prompt: "Если фигуру повернуть на 180°, какой вариант совпадёт с исходным квадратом с диагональю?",
+      options: ["тот же", "зеркальный", "перевёрнутый треугольник", "пустой"],
+      correctIndex: 0,
+    },
+    {
+      id: "g4-m7",
+      batteryId: "math_aptitude_4",
+      prompt: "Сравни 48 и 84.",
+      options: ["48 > 84", "48 < 84", "48 = 84", "сравнить нельзя"],
+      correctIndex: 1,
+    },
+    {
+      id: "g4-m8",
+      batteryId: "math_aptitude_4",
+      prompt: "На рисунке 2 ряда по 5 кружков. Сколько всего кружков?",
       options: ["7", "8", "10", "12"],
       correctIndex: 2,
     },
     {
-      id: "g4-a1",
-      batteryId: "attention",
-      batteryLabel: "Внимание",
-      prompt: "Найди лишнее слово: стол, стул, шкаф, яблоко.",
-      options: ["стол", "шкаф", "яблоко", "стул"],
-      correctIndex: 2,
-    },
-    {
-      id: "g4-a2",
-      batteryId: "attention",
-      batteryLabel: "Внимание",
-      prompt: "Продолжи ряд: 2, 4, 6, 8, ...",
-      options: ["9", "10", "12", "14"],
-      correctIndex: 1,
+      id: "g4-m9",
+      batteryId: "math_aptitude_4",
+      prompt: "Какое число должно быть в пропуске: 2, 3, 5, 8, ...",
+      options: ["10", "11", "12", "13"],
+      correctIndex: 3,
     },
   ],
   6: [
     {
-      id: "g6-a1",
-      batteryId: "algebra",
-      batteryLabel: "Алгебра",
-      prompt: "Реши: 3x + 5 = 20. Чему равен x?",
-      options: ["3", "4", "5", "6"],
+      id: "g6-i1",
+      batteryId: "intelligence_6",
+      prompt: "Матрица: в каждой строке число углов увеличивается на 1. Какой элемент в пустой ячейке?",
+      options: ["квадрат", "пятиугольник", "шестиугольник", "треугольник"],
       correctIndex: 2,
     },
     {
-      id: "g6-a2",
-      batteryId: "algebra",
-      batteryLabel: "Алгебра",
-      prompt: "Упрости выражение: 2(4 + y)",
-      options: ["8 + y", "6y", "8 + 2y", "4 + 2y"],
+      id: "g6-i2",
+      batteryId: "intelligence_6",
+      prompt: "Фигура каждый шаг поворачивается на 90° и меняет цвет. Что будет на 4-м шаге?",
+      options: ["исходная форма и цвет", "другой цвет", "зеркальная форма", "форма исчезнет"],
+      correctIndex: 0,
+    },
+    {
+      id: "g6-i3",
+      batteryId: "intelligence_6",
+      prompt: "Последовательность символов obeys rule AB, BAA, ABBB, ?. Выбери следующий элемент.",
+      options: ["ABBBB", "AAABBB", "ABBBBB", "BAAAA"],
       correctIndex: 2,
+    },
+    {
+      id: "g6-i4",
+      batteryId: "intelligence_6",
+      prompt: "Если к каждой фигуре применяют два правила: поворот и сдвиг вправо, где окажется итоговая фигура?",
+      options: ["в левом верхнем углу", "в правом верхнем углу", "в центре", "в левом нижнем углу"],
+      correctIndex: 1,
+    },
+    {
+      id: "g6-i5",
+      batteryId: "intelligence_6",
+      prompt: "Найди элемент, нарушающий двухуровневый паттерн: чётность + форма.",
+      options: ["2▲", "4▲", "6■", "8▲"],
+      correctIndex: 2,
+    },
+    {
+      id: "g6-i6",
+      batteryId: "intelligence_6",
+      prompt: "Если 1-й столбец увеличивает число на 2, а 2-й умножает на 2, чему равен выход для 5?",
+      options: ["12", "14", "16", "20"],
+      correctIndex: 2,
+    },
+    {
+      id: "g6-i7",
+      batteryId: "intelligence_6",
+      prompt: "Какой вариант завершает матрицу, где по диагонали чередуются типы преобразований?",
+      options: ["зеркало", "поворот", "масштаб", "комбинация поворота и зеркала"],
+      correctIndex: 3,
+    },
+    {
+      id: "g6-i8",
+      batteryId: "intelligence_6",
+      prompt: "В последовательности 3, 6, 12, 24 применяется один и тот же оператор. Какой следующий элемент?",
+      options: ["30", "36", "42", "48"],
+      correctIndex: 3,
+    },
+    {
+      id: "g6-i9",
+      batteryId: "intelligence_6",
+      prompt: "Условие: фигуры с нечётным числом сторон затемняются, с чётным — светлые. Какая фигура должна быть тёмной?",
+      options: ["квадрат", "шестиугольник", "пятиугольник", "восьмиугольник"],
+      correctIndex: 2,
+    },
+    {
+      id: "g6-i10",
+      batteryId: "intelligence_6",
+      prompt: "Какой ответ сохраняет оба правила одновременно: порядок символов и направление стрелки?",
+      options: ["A→B", "B→A", "A←B", "B←A"],
+      correctIndex: 3,
     },
     {
       id: "g6-l1",
-      batteryId: "logic",
-      batteryLabel: "Логика",
-      prompt: "Если все A — это B, и некоторые B — это C, что верно?",
-      options: ["Все A — это C", "Некоторые C — это A", "Нельзя точно утверждать, что A и C пересекаются", "Ни одно A не является B"],
-      correctIndex: 2,
+      batteryId: "logic_6",
+      prompt: "Если все M являются N, и ни один N не является P, что верно?",
+      options: ["Некоторые M — это P", "Ни один M не является P", "Все P являются M", "Нельзя сделать вывод"],
+      correctIndex: 1,
     },
     {
       id: "g6-l2",
-      batteryId: "logic",
-      batteryLabel: "Логика",
-      prompt: "Какое число продолжает ряд: 1, 1, 2, 3, 5, 8, ...",
+      batteryId: "logic_6",
+      prompt: "Если утверждение «Если идёт дождь, то матч отменят» истинно, а матч не отменили, что следует?",
+      options: ["Дождь точно был", "Дождя не было", "Матч всё равно отменён", "Ничего нельзя вывести"],
+      correctIndex: 1,
+    },
+    {
+      id: "g6-l3",
+      batteryId: "logic_6",
+      prompt: "Выбери корректное следствие: «Некоторые A — B. Все B — C».",
+      options: ["Некоторые A — C", "Все A — C", "Ни один A — C", "Все C — A"],
+      correctIndex: 0,
+    },
+    {
+      id: "g6-l4",
+      batteryId: "logic_6",
+      prompt: "Какая структура аргумента корректна?",
+      options: ["Если X, то Y. Y, значит X", "Если X, то Y. Не Y, значит не X", "X или Y. X, значит Y", "Если X, то Y. X, значит не Y"],
+      correctIndex: 1,
+    },
+    {
+      id: "g6-l5",
+      batteryId: "logic_6",
+      prompt: "Определи противоречие: какое из утверждений не может быть истинным одновременно с остальными?",
+      options: ["Все ученики пришли", "Некоторые ученики опоздали", "Ни один ученик не отсутствует", "Один ученик не пришёл"],
+      correctIndex: 3,
+    },
+    {
+      id: "g6-l6",
+      batteryId: "logic_6",
+      prompt: "Если A → B и B → C, какое отношение между A и C?",
+      options: ["A → C", "C → A", "A ↔ C", "Связи нет"],
+      correctIndex: 0,
+    },
+    {
+      id: "g6-l7",
+      batteryId: "logic_6",
+      prompt: "Установи корректный вывод из посылок: «Либо K, либо L. Не K».",
+      options: ["Не L", "L", "K", "Ни K, ни L"],
+      correctIndex: 1,
+    },
+    {
+      id: "g6-l8",
+      batteryId: "logic_6",
+      prompt: "Какой вывод валиден при кванторах: «Все R — S. Некоторые S — T»?",
+      options: ["Все R — T", "Некоторые T — R", "R и T могут не пересекаться", "Ни один R — S"],
+      correctIndex: 2,
+    },
+    {
+      id: "g6-l9",
+      batteryId: "logic_6",
+      prompt: "Какой аргумент имеет форму обобщения по одному примеру (и потому слаб)?",
+      options: ["Один ученик любит геометрию, значит все любят геометрию", "Все чётные делятся на 2", "Если лёд нагреть, он тает", "Треугольник имеет три стороны"],
+      correctIndex: 0,
+    },
+    {
+      id: "g6-l10",
+      batteryId: "logic_6",
+      prompt: "Какое утверждение является необходимым условием: «Чтобы сдать зачёт, нужно решить все базовые задачи»?",
+      options: ["Если решены все базовые задачи, зачёт гарантирован", "Без решения всех базовых задач зачёт невозможен", "Зачёт не зависит от задач", "Решить можно только сложные задачи"],
+      correctIndex: 1,
+    },
+    {
+      id: "g6-m1",
+      batteryId: "math_aptitude_6",
+      prompt: "Продолжи структуру: 2, 6, 12, 20, ...",
+      options: ["28", "30", "32", "36"],
+      correctIndex: 1,
+    },
+    {
+      id: "g6-m2",
+      batteryId: "math_aptitude_6",
+      prompt: "На весах: слева 2 одинаковых куба и гиря 3 кг, справа 11 кг. Сколько весит куб?",
+      options: ["3 кг", "4 кг", "5 кг", "6 кг"],
+      correctIndex: 1,
+    },
+    {
+      id: "g6-m3",
+      batteryId: "math_aptitude_6",
+      prompt: "Сколько разных пар можно составить из 5 учеников?",
+      options: ["5", "8", "10", "20"],
+      correctIndex: 2,
+    },
+    {
+      id: "g6-m4",
+      batteryId: "math_aptitude_6",
+      prompt: "Если скорость увеличили с 40 до 60 км/ч, во сколько раз она выросла?",
+      options: ["в 1.2 раза", "в 1.5 раза", "в 2 раза", "в 2.5 раза"],
+      correctIndex: 1,
+    },
+    {
+      id: "g6-m5",
+      batteryId: "math_aptitude_6",
+      prompt: "Какое выражение моделирует стоимость x тетрадей по 18 рублей и одного альбома за 70 рублей?",
+      options: ["18 + 70x", "18x + 70", "70x + 18", "18x - 70"],
+      correctIndex: 1,
+    },
+    {
+      id: "g6-m6",
+      batteryId: "math_aptitude_6",
+      prompt: "Числовой паттерн задаётся правилом n² - 1. Чему равно значение при n=6?",
+      options: ["33", "35", "36", "37"],
+      correctIndex: 1,
+    },
+    {
+      id: "g6-m7",
+      batteryId: "math_aptitude_6",
+      prompt: "Если 3 ручки стоят столько же, сколько 2 блокнота, а ручка = 12 рублей, сколько стоит блокнот?",
+      options: ["12", "16", "18", "20"],
+      correctIndex: 2,
+    },
+    {
+      id: "g6-m8",
+      batteryId: "math_aptitude_6",
+      prompt: "В последовательности фигур каждая следующая добавляет 3 элемента. Было 4, затем 7, затем 10. Что дальше?",
       options: ["11", "12", "13", "14"],
       correctIndex: 2,
     },
     {
-      id: "g6-r1",
-      batteryId: "reading6",
-      batteryLabel: "Понимание текста",
-      prompt: "Автор пишет: 'Технологии помогают людям учиться быстрее'. Что это означает?",
-      options: ["Технологии всегда вредны", "Обучение с технологиями может быть эффективнее", "Учиться больше не нужно", "Книги исчезнут завтра"],
-      correctIndex: 1,
+      id: "g6-m9",
+      batteryId: "math_aptitude_6",
+      prompt: "Сколько способов выбрать капитана и заместителя из 4 человек?",
+      options: ["6", "8", "10", "12"],
+      correctIndex: 3,
     },
     {
-      id: "g6-r2",
-      batteryId: "reading6",
-      batteryLabel: "Понимание текста",
-      prompt: "Какой заголовок лучше подходит для текста о бережном отношении к воде?",
-      options: ["Как строить самолёты", "Почему важно экономить воду", "История кино", "Путешествие на Марс"],
-      correctIndex: 1,
+      id: "g6-m10",
+      batteryId: "math_aptitude_6",
+      prompt: "Какое значение лучше всего продолжает обобщение: 1, 4, 9, 16, ...",
+      options: ["20", "24", "25", "27"],
+      correctIndex: 2,
     },
   ],
 };
@@ -193,60 +522,6 @@ const EMPTY_STORE: Store = {
   campaigns: [],
   sessions: [],
 };
-
-function sessionKey(session: Pick<Session, "childId" | "campaignId">): string {
-  return `${session.childId}::${session.campaignId}`;
-}
-
-function normalizeStore(raw: Store): Store {
-  const sessions = (raw.sessions ?? []).map((s) => ({
-    ...s,
-    answers: s.answers ?? [],
-    currentQuestionIndex: s.currentQuestionIndex ?? (s.answers?.length ?? 0),
-    adminState: s.adminState ?? "default",
-  }));
-
-  const completedByPair = new Map<string, Session[]>();
-  for (const session of sessions) {
-    if (session.status !== "completed") continue;
-    const key = sessionKey(session);
-    completedByPair.set(key, [...(completedByPair.get(key) ?? []), session]);
-  }
-
-  const demotedCompleted = new Set<string>();
-  completedByPair.forEach((items) => {
-    if (items.length <= 1) return;
-    const sorted = [...items].sort((a, b) => {
-      const aTime = new Date(a.completedAt ?? a.startedAt).getTime();
-      const bTime = new Date(b.completedAt ?? b.startedAt).getTime();
-      return bTime - aTime;
-    });
-    sorted.slice(1).forEach((session) => demotedCompleted.add(session.id));
-  });
-
-  const normalizedSessions = sessions.map((session) => {
-    if (!demotedCompleted.has(session.id)) return session;
-    const nextScores = computeScoresFromAnswers(session.grade, session.answers);
-    const nextRecommendation = computeRecommendation(session.grade, nextScores);
-    const totalQuestions = QUESTION_SETS[session.grade].length;
-    return {
-      ...session,
-      status: "paused" as const,
-      completedAt: undefined,
-      pausedAt: new Date().toISOString(),
-      currentQuestionIndex: Math.min(session.answers.length, totalQuestions),
-      scores: nextScores,
-      recommendation: nextRecommendation,
-      adminState: "reset" as const,
-    };
-  });
-
-  return {
-    children: raw.children ?? [],
-    campaigns: raw.campaigns ?? [],
-    sessions: normalizedSessions,
-  };
-}
 
 const cardClass = "rounded-lg border border-slate-700 bg-slate-900 p-4 shadow-sm";
 const buttonSecondaryClass =
@@ -264,24 +539,132 @@ function createCode(): string {
   return Math.random().toString(36).slice(2, 8).toUpperCase();
 }
 
-function computeRecommendation(grade: Grade, scores: SessionScore[]): string {
-  const relevant = BATTERIES[grade];
-  const full = relevant.map((b) => scores.find((s) => s.batteryId === b.id)?.value ?? 0);
-  const avg = full.reduce((acc, v) => acc + v, 0) / full.length;
-  if (avg >= 80) return "Рекомендован расширенный профиль и углубленная нагрузка.";
-  if (avg >= 60) return "Рекомендован стандартный профиль с регулярным сопровождением.";
-  return "Рекомендована поддерживающая программа и индивидуальный план.";
+function sessionKey(session: Pick<Session, "childId" | "campaignId">): string {
+  return `${session.childId}::${session.campaignId}`;
 }
 
-function computeScoresFromAnswers(grade: Grade, answers: SessionAnswer[]): SessionScore[] {
-  const gradeQuestions = QUESTION_SETS[grade];
-  return BATTERIES[grade].map((battery) => {
-    const batteryQuestions = gradeQuestions.filter((q) => q.batteryId === battery.id);
-    const answered = answers.filter((a) => batteryQuestions.some((q) => q.id === a.questionId));
+function clamp(value: number, min: number, max: number): number {
+  return Math.max(min, Math.min(max, value));
+}
+
+function toTimestamp(value: string | undefined): number {
+  if (!value) return Date.now();
+  const ts = new Date(value).getTime();
+  return Number.isNaN(ts) ? Date.now() : ts;
+}
+
+function scaledFromRaw(raw: number): number {
+  return clamp(Math.round(raw / 10), 1, 10);
+}
+
+function interpretationFromScaled(scaled: number): string {
+  if (scaled >= 8) return "Высокий уровень по домену.";
+  if (scaled >= 5) return "Базовый/достаточный уровень по домену.";
+  return "Требуется поддержка и развитие навыка.";
+}
+
+function computeScoresFromAnswers(grade: Grade, answers: SessionAnswer[], startedAt: string): SessionScore[] {
+  const batteries = BATTERIES[grade];
+
+  return batteries.map((battery, batteryIndex) => {
+    const answered = answers
+      .filter((a) => a.batteryId === battery.id)
+      .sort((a, b) => toTimestamp(a.answeredAt) - toTimestamp(b.answeredAt));
+
     const correct = answered.filter((a) => a.isCorrect).length;
-    const value = answered.length ? Math.round((correct / answered.length) * 100) : 0;
-    return { batteryId: battery.id, value };
+    const rawScore = answered.length ? Math.round((correct / answered.length) * 100) : 0;
+    const scaledScore = scaledFromRaw(rawScore);
+
+    const previousBatteryId = batteries[batteryIndex - 1]?.id;
+    const previousAnswers = previousBatteryId
+      ? answers
+          .filter((a) => a.batteryId === previousBatteryId)
+          .sort((a, b) => toTimestamp(a.answeredAt) - toTimestamp(b.answeredAt))
+      : [];
+
+    const blockStartTs = previousAnswers.length
+      ? toTimestamp(previousAnswers[previousAnswers.length - 1].answeredAt)
+      : toTimestamp(startedAt);
+    const blockEndTs = answered.length ? toTimestamp(answered[answered.length - 1].answeredAt) : blockStartTs;
+    const durationSec = answered.length ? clamp(Math.round((blockEndTs - blockStartTs) / 1000), 15, 7200) : 0;
+
+    return {
+      batteryId: battery.id,
+      rawScore,
+      scaledScore,
+      durationSec,
+      interpretation: interpretationFromScaled(scaledScore),
+      answered: answered.length,
+      correct,
+    };
   });
+}
+
+function computeRecommendation(grade: Grade, scores: SessionScore[]): string {
+  const relevant = BATTERIES[grade];
+  const scaled = relevant.map((b) => scores.find((s) => s.batteryId === b.id)?.scaledScore ?? 1);
+  const avg = scaled.reduce((acc, value) => acc + value, 0) / scaled.length;
+  if (avg >= 8) return "Рекомендован расширенный профиль и углублённые задания.";
+  if (avg >= 5) return "Рекомендован базовый профиль с плановой поддержкой.";
+  return "Рекомендована поддерживающая программа и индивидуальное сопровождение.";
+}
+
+function normalizeAnswers(grade: Grade, answers: Session["answers"]): SessionAnswer[] {
+  const gradeQuestions = QUESTION_SETS[grade];
+  return (answers ?? []).map((answer, index) => {
+    const question = gradeQuestions.find((item) => item.id === answer.questionId);
+    return {
+      ...answer,
+      batteryId: answer.batteryId || question?.batteryId || BATTERIES[grade][0].id,
+      answeredAt: answer.answeredAt || new Date(Date.now() + index * 1000).toISOString(),
+    };
+  });
+}
+
+function normalizeStore(raw: Store): Store {
+  const sessions = (raw.sessions ?? []).map((session) => {
+    const normalizedAnswers = normalizeAnswers(session.grade, session.answers ?? []);
+    const totalQuestions = QUESTION_SETS[session.grade].length;
+    const scores = computeScoresFromAnswers(session.grade, normalizedAnswers, session.startedAt);
+
+    return {
+      ...session,
+      answers: normalizedAnswers,
+      scores,
+      recommendation: computeRecommendation(session.grade, scores),
+      currentQuestionIndex: clamp(session.currentQuestionIndex ?? normalizedAnswers.length, 0, totalQuestions),
+      adminState: session.adminState ?? "default",
+    };
+  });
+
+  const completedByPair = new Map<string, Session[]>();
+  for (const session of sessions) {
+    if (session.status !== "completed") continue;
+    const key = sessionKey(session);
+    completedByPair.set(key, [...(completedByPair.get(key) ?? []), session]);
+  }
+
+  const demotedCompleted = new Set<string>();
+  completedByPair.forEach((items) => {
+    if (items.length <= 1) return;
+    const sorted = [...items].sort((a, b) => toTimestamp(b.completedAt ?? b.startedAt) - toTimestamp(a.completedAt ?? a.startedAt));
+    sorted.slice(1).forEach((item) => demotedCompleted.add(item.id));
+  });
+
+  return {
+    children: raw.children ?? [],
+    campaigns: raw.campaigns ?? [],
+    sessions: sessions.map((session) => {
+      if (!demotedCompleted.has(session.id)) return session;
+      return {
+        ...session,
+        status: "paused" as const,
+        completedAt: undefined,
+        pausedAt: new Date().toISOString(),
+        adminState: "reset" as const,
+      };
+    }),
+  };
 }
 
 function toCsv(rows: string[][]): string {
@@ -301,22 +684,25 @@ function adminStatusLabel(session: Session): string {
   return "на паузе";
 }
 
+function isSessionComplete(session: Session): boolean {
+  const gradeQuestions = QUESTION_SETS[session.grade];
+  const expected = gradeQuestions.length;
+  return session.answers.length >= expected;
+}
+
 export default function Home() {
   const [store, setStore] = useState<Store>(() => {
-    if (typeof window === "undefined") {
-      return EMPTY_STORE;
-    }
+    if (typeof window === "undefined") return EMPTY_STORE;
     const raw = window.localStorage.getItem(STORAGE_KEY);
-    if (!raw) {
-      return EMPTY_STORE;
-    }
+    if (!raw) return EMPTY_STORE;
+
     try {
-      const parsed = JSON.parse(raw) as Store;
-      return normalizeStore(parsed);
+      return normalizeStore(JSON.parse(raw) as Store);
     } catch {
       return EMPTY_STORE;
     }
   });
+
   const [role, setRole] = useState<"admin" | "child">("admin");
   const [message, setMessage] = useState<{ type: "ok" | "error"; text: string } | null>(null);
 
@@ -330,11 +716,11 @@ export default function Home() {
     window.localStorage.setItem(STORAGE_KEY, JSON.stringify(store));
   }, [store]);
 
-  const childrenByCode = useMemo(() => new Map(store.children.map((c) => [c.accessCode, c])), [store.children]);
-  const loggedChild = loggedChildId ? store.children.find((c) => c.id === loggedChildId) : null;
+  const childrenByCode = useMemo(() => new Map(store.children.map((child) => [child.accessCode, child])), [store.children]);
+  const loggedChild = loggedChildId ? store.children.find((child) => child.id === loggedChildId) : null;
 
   const childSessions = useMemo(
-    () => (loggedChild ? store.sessions.filter((s) => s.childId === loggedChild.id) : []),
+    () => (loggedChild ? store.sessions.filter((session) => session.childId === loggedChild.id) : []),
     [loggedChild, store.sessions],
   );
 
@@ -343,33 +729,37 @@ export default function Home() {
     setTimeout(() => setMessage(null), 2800);
   }
 
-  function addCampaign(e: FormEvent) {
+  function addCampaign(e: FormEvent): void {
     e.preventDefault();
     const title = campaignTitle.trim();
     if (!title) {
       show("error", "Введите название кампании.");
       return;
     }
+
     const campaign: Campaign = {
       id: uid("cmp"),
       title,
       grade: campaignGrade,
       createdAt: new Date().toISOString(),
     };
+
     setStore((prev) => ({ ...prev, campaigns: [campaign, ...prev.campaigns] }));
     setCampaignTitle("");
     show("ok", "Кампания создана.");
   }
 
-  function issueAccessCode() {
+  function issueAccessCode(): void {
     if (!store.campaigns.length) {
       show("error", "Сначала создайте кампанию.");
       return;
     }
+
     let code = createCode();
     while (childrenByCode.has(code)) {
       code = createCode();
     }
+
     const child: Child = {
       id: uid("ch"),
       registryId: `ANON-${Date.now().toString(36).slice(-4).toUpperCase()}-${Math.random().toString(36).slice(2, 4).toUpperCase()}`,
@@ -377,66 +767,77 @@ export default function Home() {
       accessCode: code,
       createdAt: new Date().toISOString(),
     };
+
     setStore((prev) => ({ ...prev, children: [child, ...prev.children] }));
     show("ok", `Код доступа создан: ${code}`);
   }
 
-  function loginChild(e: FormEvent) {
+  function loginChild(e: FormEvent): void {
     e.preventDefault();
-    const normalized = loginCode.trim().toUpperCase();
-    const child = childrenByCode.get(normalized);
+    const normalizedCode = loginCode.trim().toUpperCase();
+    const child = childrenByCode.get(normalizedCode);
     if (!child) {
       show("error", "Код не найден. Проверьте ввод.");
       return;
     }
+
     setLoggedChildId(child.id);
     setLoginCode("");
     show("ok", `Вход выполнен. Профиль: ${child.registryId}`);
   }
 
-  function startOrResume(child: Child, campaignId: string) {
-    const campaign = store.campaigns.find((c) => c.id === campaignId);
+  function startOrResume(child: Child, campaignId: string): void {
+    const campaign = store.campaigns.find((item) => item.id === campaignId);
     if (!campaign) {
       show("error", "Кампания не найдена.");
       return;
     }
+
     if (campaign.grade !== child.grade) {
       show("error", "Нельзя смешивать 4 и 6 классы в одной сессии.");
       return;
     }
+
     const existingCompleted = store.sessions.find(
-      (s) => s.childId === child.id && s.campaignId === campaign.id && s.status === "completed" && s.grade === child.grade,
+      (session) =>
+        session.childId === child.id &&
+        session.campaignId === campaign.id &&
+        session.status === "completed" &&
+        session.grade === child.grade,
     );
     if (existingCompleted) {
       show("error", "Тестирование по этой кампании уже завершено. Повторный проход недоступен.");
       return;
     }
+
     const existingActiveOrPaused = store.sessions.find(
-      (s) =>
-        s.childId === child.id &&
-        s.campaignId === campaign.id &&
-        s.status !== "completed" &&
-        s.grade === child.grade,
+      (session) =>
+        session.childId === child.id &&
+        session.campaignId === campaign.id &&
+        session.status !== "completed" &&
+        session.grade === child.grade,
     );
 
     if (existingActiveOrPaused) {
+      const totalQuestions = QUESTION_SETS[existingActiveOrPaused.grade].length;
       setStore((prev) => ({
         ...prev,
-        sessions: prev.sessions.map((s) =>
-          s.id === existingActiveOrPaused.id
+        sessions: prev.sessions.map((session) =>
+          session.id === existingActiveOrPaused.id
             ? {
-                ...s,
+                ...session,
                 status: "active",
                 pausedAt: undefined,
-                currentQuestionIndex: Math.min(s.currentQuestionIndex ?? s.answers.length, QUESTION_SETS[s.grade].length),
+                currentQuestionIndex: clamp(session.currentQuestionIndex, 0, totalQuestions),
               }
-            : s,
+            : session,
         ),
       }));
       show("ok", "Возобновлена существующая сессия.");
       return;
     }
 
+    const zeroScores = computeScoresFromAnswers(child.grade, [], new Date().toISOString());
     const newSession: Session = {
       id: uid("ses"),
       childId: child.id,
@@ -446,79 +847,90 @@ export default function Home() {
       startedAt: new Date().toISOString(),
       answers: [],
       currentQuestionIndex: 0,
-      scores: BATTERIES[child.grade].map((b) => ({ batteryId: b.id, value: 0 })),
-      recommendation: "",
+      scores: zeroScores,
+      recommendation: computeRecommendation(child.grade, zeroScores),
     };
 
     setStore((prev) => ({ ...prev, sessions: [newSession, ...prev.sessions] }));
     show("ok", "Новая сессия запущена.");
   }
 
-  function answerQuestion(sessionId: string, selectedIndex: number) {
+  function answerQuestion(sessionId: string, selectedIndex: number): void {
     setStore((prev) => ({
       ...prev,
-      sessions: prev.sessions.map((s) => {
-        if (s.id !== sessionId || s.status === "completed") return s;
-        const questions = QUESTION_SETS[s.grade];
-        const question = questions[s.currentQuestionIndex];
-        if (!question) return s;
+      sessions: prev.sessions.map((session) => {
+        if (session.id !== sessionId || session.status === "completed") return session;
+
+        const questions = QUESTION_SETS[session.grade];
+        const question = questions[session.currentQuestionIndex];
+        if (!question) return session;
+
         const newAnswer: SessionAnswer = {
           questionId: question.id,
+          batteryId: question.batteryId,
           choiceIndex: selectedIndex,
           isCorrect: selectedIndex === question.correctIndex,
+          answeredAt: new Date().toISOString(),
         };
-        const nextAnswers = [...s.answers, newAnswer];
-        const nextScores = computeScoresFromAnswers(s.grade, nextAnswers);
+
+        const nextAnswers = [...session.answers, newAnswer];
+        const nextScores = computeScoresFromAnswers(session.grade, nextAnswers, session.startedAt);
+
         return {
-          ...s,
+          ...session,
           answers: nextAnswers,
-          currentQuestionIndex: Math.min(s.currentQuestionIndex + 1, questions.length),
+          currentQuestionIndex: clamp(session.currentQuestionIndex + 1, 0, questions.length),
           scores: nextScores,
-          recommendation: computeRecommendation(s.grade, nextScores),
+          recommendation: computeRecommendation(session.grade, nextScores),
         };
       }),
     }));
   }
 
-  function pauseSession(sessionId: string) {
+  function pauseSession(sessionId: string): void {
     setStore((prev) => ({
       ...prev,
-      sessions: prev.sessions.map((s) =>
-        s.id === sessionId && s.status !== "completed"
-          ? { ...s, status: "paused", pausedAt: new Date().toISOString() }
-          : s,
+      sessions: prev.sessions.map((session) =>
+        session.id === sessionId && session.status !== "completed"
+          ? { ...session, status: "paused", pausedAt: new Date().toISOString() }
+          : session,
       ),
     }));
     show("ok", "Сессия сохранена и поставлена на паузу.");
   }
 
-  function completeSession(sessionId: string) {
-    const target = store.sessions.find((s) => s.id === sessionId);
+  function completeSession(sessionId: string): void {
+    const target = store.sessions.find((session) => session.id === sessionId);
     if (!target) return;
 
     const duplicateCompleted = store.sessions.find(
-      (s) => s.id !== target.id && s.childId === target.childId && s.campaignId === target.campaignId && s.status === "completed",
+      (session) =>
+        session.id !== target.id &&
+        session.childId === target.childId &&
+        session.campaignId === target.campaignId &&
+        session.status === "completed",
     );
     if (duplicateCompleted) {
       show("error", "Для этой кампании уже есть завершенная попытка. Дублирование запрещено.");
       return;
     }
 
-    const requiredDone = target.answers.length >= QUESTION_SETS[target.grade].length;
-    if (!requiredDone) {
-      show("error", "Для завершения необходимо ответить на все вопросы батареи.");
+    if (!isSessionComplete(target)) {
+      show("error", "Сессию можно завершить только после прохождения всех 3 блоков.");
       return;
     }
 
     setStore((prev) => ({
       ...prev,
-      sessions: prev.sessions.map((s) => {
-        if (s.id !== sessionId) return s;
+      sessions: prev.sessions.map((session) => {
+        if (session.id !== sessionId) return session;
+        const recomputedScores = computeScoresFromAnswers(session.grade, session.answers, session.startedAt);
         return {
-          ...s,
+          ...session,
           status: "completed",
           completedAt: new Date().toISOString(),
-          recommendation: computeRecommendation(s.grade, s.scores),
+          scores: recomputedScores,
+          recommendation: computeRecommendation(session.grade, recomputedScores),
           adminState: "default",
         };
       }),
@@ -526,21 +938,23 @@ export default function Home() {
     show("ok", "Сессия завершена.");
   }
 
-  function resetSession(sessionId: string) {
+  function resetSession(sessionId: string): void {
     setStore((prev) => ({
       ...prev,
-      sessions: prev.sessions.map((s) => {
-        if (s.id !== sessionId) return s;
+      sessions: prev.sessions.map((session) => {
+        if (session.id !== sessionId) return session;
+        const restartedAt = new Date().toISOString();
+        const freshScores = computeScoresFromAnswers(session.grade, [], restartedAt);
         return {
-          ...s,
+          ...session,
           status: "paused",
-          startedAt: new Date().toISOString(),
-          pausedAt: new Date().toISOString(),
+          startedAt: restartedAt,
+          pausedAt: restartedAt,
           completedAt: undefined,
           answers: [],
           currentQuestionIndex: 0,
-          scores: BATTERIES[s.grade].map((b) => ({ batteryId: b.id, value: 0 })),
-          recommendation: "",
+          scores: freshScores,
+          recommendation: computeRecommendation(session.grade, freshScores),
           adminState: "reset",
         };
       }),
@@ -548,23 +962,25 @@ export default function Home() {
     show("ok", "Попытка сброшена администратором. Ученик может пройти заново.");
   }
 
-  function reopenSession(sessionId: string) {
+  function reopenSession(sessionId: string): void {
     setStore((prev) => ({
       ...prev,
-      sessions: prev.sessions.map((s) => {
-        if (s.id !== sessionId) return s;
-        const totalQuestions = QUESTION_SETS[s.grade].length;
-        const trimmedAnswers = s.answers.length >= totalQuestions ? s.answers.slice(0, totalQuestions - 1) : s.answers;
-        const nextScores = computeScoresFromAnswers(s.grade, trimmedAnswers);
+      sessions: prev.sessions.map((session) => {
+        if (session.id !== sessionId) return session;
+
+        const totalQuestions = QUESTION_SETS[session.grade].length;
+        const trimmedAnswers = session.answers.length >= totalQuestions ? session.answers.slice(0, totalQuestions - 1) : session.answers;
+        const nextScores = computeScoresFromAnswers(session.grade, trimmedAnswers, session.startedAt);
+
         return {
-          ...s,
+          ...session,
           status: "paused",
           pausedAt: new Date().toISOString(),
           completedAt: undefined,
           answers: trimmedAnswers,
-          currentQuestionIndex: Math.min(trimmedAnswers.length, totalQuestions),
+          currentQuestionIndex: clamp(trimmedAnswers.length, 0, totalQuestions),
           scores: nextScores,
-          recommendation: computeRecommendation(s.grade, nextScores),
+          recommendation: computeRecommendation(session.grade, nextScores),
           adminState: "reopened",
         };
       }),
@@ -572,39 +988,42 @@ export default function Home() {
     show("ok", "Попытка переоткрыта администратором.");
   }
 
-  function adminOverride(sessionId: string, text: string) {
+  function adminOverride(sessionId: string, text: string): void {
     const normalized = text.trim();
     if (!normalized) {
       show("error", "Введите текст для ручной рекомендации.");
       return;
     }
+
     setStore((prev) => ({
       ...prev,
-      sessions: prev.sessions.map((s) =>
-        s.id === sessionId
+      sessions: prev.sessions.map((session) =>
+        session.id === sessionId
           ? {
-              ...s,
+              ...session,
               adminOverride: {
                 text: normalized,
                 by: "admin",
                 at: new Date().toISOString(),
               },
             }
-          : s,
+          : session,
       ),
     }));
     show("ok", "Рекомендация администратора сохранена.");
   }
 
-  function exportCodes() {
+  function exportCodes(): void {
     if (!store.children.length) {
       show("error", "Нет кодов для экспорта.");
       return;
     }
+
     const rows = [
       ["registryId", "grade", "accessCode", "createdAt"],
-      ...store.children.map((c) => [c.registryId, c.grade.toString(), c.accessCode, c.createdAt]),
+      ...store.children.map((child) => [child.registryId, child.grade.toString(), child.accessCode, child.createdAt]),
     ];
+
     const blob = new Blob([toCsv(rows)], { type: "text/csv;charset=utf-8" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
@@ -612,22 +1031,23 @@ export default function Home() {
     a.download = `access-codes-${new Date().toISOString().slice(0, 10)}.csv`;
     a.click();
     URL.revokeObjectURL(url);
+
     show("ok", "Список кодов экспортирован в CSV.");
   }
 
-  const completedSessions = store.sessions.filter((s) => s.status === "completed");
-  const incompleteSessions = store.sessions.filter((s) => s.status !== "completed");
+  const completedSessions = store.sessions.filter((session) => session.status === "completed");
+  const incompleteSessions = store.sessions.filter((session) => session.status !== "completed");
 
   const campaignSummary = store.campaigns.map((campaign) => {
-    const items = store.sessions.filter((s) => s.campaignId === campaign.id && s.status === "completed");
-    const recommendations = items.map((s) => s.adminOverride?.text || s.recommendation).filter(Boolean);
+    const items = store.sessions.filter((session) => session.campaignId === campaign.id && session.status === "completed");
+    const recommendations = items.map((session) => session.adminOverride?.text || session.recommendation).filter(Boolean);
     return { campaign, done: items.length, recommendations };
   });
 
   return (
     <div className="mx-auto min-h-screen max-w-6xl bg-slate-950 p-6 font-sans text-slate-100">
       <header className="mb-6 flex flex-wrap items-center gap-3">
-        <h1 className="text-2xl font-bold text-white">School Profiler — Demo MVP</h1>
+        <h1 className="text-2xl font-bold text-white">School Profiler — Диагностическая батарея</h1>
         <button className={buttonSecondaryClass} onClick={() => setRole("admin")} type="button">
           Режим администратора
         </button>
@@ -678,9 +1098,9 @@ export default function Home() {
               </button>
             </form>
             <ul className="space-y-2 text-sm">
-              {store.campaigns.map((c) => (
-                <li className="rounded-md border border-slate-700 bg-slate-900 p-2" key={c.id}>
-                  {c.title} · {c.grade} класс
+              {store.campaigns.map((campaign) => (
+                <li className="rounded-md border border-slate-700 bg-slate-900 p-2" key={campaign.id}>
+                  {campaign.title} · {campaign.grade} класс
                 </li>
               ))}
               {!store.campaigns.length && <li className="text-slate-400">Кампаний пока нет.</li>}
@@ -735,13 +1155,13 @@ export default function Home() {
           <article className={`${cardClass} md:col-span-2`}>
             <h2 className="mb-3 text-lg font-semibold text-white">Пауза / незавершенные сессии</h2>
             <ul className="space-y-2 text-sm">
-              {incompleteSessions.map((s) => {
-                const child = store.children.find((c) => c.id === s.childId);
-                const campaign = store.campaigns.find((c) => c.id === s.campaignId);
+              {incompleteSessions.map((session) => {
+                const child = store.children.find((item) => item.id === session.childId);
+                const campaign = store.campaigns.find((item) => item.id === session.campaignId);
                 return (
-                  <li className="rounded-md border border-slate-700 bg-slate-900 p-2" key={s.id}>
-                    {campaign?.title ?? "Кампания удалена"} · {child?.registryId ?? "Профиль удален"} · {s.grade} класс · статус:{" "}
-                    {adminStatusLabel(s)}
+                  <li className="rounded-md border border-slate-700 bg-slate-900 p-2" key={session.id}>
+                    {campaign?.title ?? "Кампания удалена"} · {child?.registryId ?? "Профиль удалён"} · {session.grade} класс · статус: {" "}
+                    {adminStatusLabel(session)}
                   </li>
                 );
               })}
@@ -752,42 +1172,65 @@ export default function Home() {
           <article className={`${cardClass} md:col-span-2`}>
             <h2 className="mb-3 text-lg font-semibold text-white">Завершенные сессии и ручная проверка</h2>
             <ul className="space-y-3">
-              {completedSessions.map((s) => {
-                const child = store.children.find((c) => c.id === s.childId);
-                const campaign = store.campaigns.find((c) => c.id === s.campaignId);
-                const rec = s.adminOverride?.text || s.recommendation;
+              {completedSessions.map((session) => {
+                const child = store.children.find((item) => item.id === session.childId);
+                const campaign = store.campaigns.find((item) => item.id === session.campaignId);
+                const recommendation = session.adminOverride?.text || session.recommendation;
+
                 return (
-                  <li className="rounded-md border border-slate-700 bg-slate-900 p-3" key={s.id}>
+                  <li className="rounded-md border border-slate-700 bg-slate-900 p-3" key={session.id}>
                     <p className="text-sm text-slate-200">
-                      {campaign?.title ?? "Кампания удалена"} · {child?.registryId ?? "Профиль удален"} · {s.grade} класс
+                      {campaign?.title ?? "Кампания удалена"} · {child?.registryId ?? "Профиль удалён"} · {session.grade} класс
                     </p>
-                    <p className="mb-1 text-xs uppercase tracking-wide text-amber-300">Статус: {adminStatusLabel(s)}</p>
-                    <p className="mb-2 text-sm text-slate-100">Итог: {rec || "—"}</p>
-                    <p className="mb-2 text-xs text-slate-300">
-                      Баллы: {s.scores.map((score) => `${BATTERIES[s.grade].find((b) => b.id === score.batteryId)?.label}: ${score.value}`).join(" · ")}
-                    </p>
+                    <p className="mb-1 text-xs uppercase tracking-wide text-amber-300">Статус: {adminStatusLabel(session)}</p>
+                    <p className="mb-3 text-sm text-slate-100">Итоговая рекомендация: {recommendation || "—"}</p>
+
+                    <div className="mb-3 overflow-x-auto rounded-md border border-slate-700">
+                      <table className="w-full text-left text-xs text-slate-100 md:text-sm">
+                        <thead className="bg-slate-800">
+                          <tr>
+                            <th className="p-2">Домен</th>
+                            <th className="p-2">Raw score</th>
+                            <th className="p-2">Scaled score</th>
+                            <th className="p-2">Длительность</th>
+                            <th className="p-2">Краткая интерпретация</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {BATTERIES[session.grade].map((battery) => {
+                            const score = session.scores.find((item) => item.batteryId === battery.id);
+                            return (
+                              <tr className="border-t border-slate-700" key={`${session.id}-${battery.id}`}>
+                                <td className="p-2">{battery.shortTitle}</td>
+                                <td className="p-2">{score?.rawScore ?? 0}% ({score?.correct ?? 0}/{score?.answered ?? 0})</td>
+                                <td className="p-2">{score?.scaledScore ?? 1}/10</td>
+                                <td className="p-2">{score?.durationSec ?? 0} сек</td>
+                                <td className="p-2">{score?.interpretation ?? "—"}</td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
+
                     <div className="flex flex-wrap gap-2">
-                      <button
-                        className={buttonSecondaryClass}
-                        onClick={() => reopenSession(s.id)}
-                        type="button"
-                      >
+                      <button className={buttonSecondaryClass} onClick={() => reopenSession(session.id)} type="button">
                         Переоткрыть попытку
                       </button>
                       <button
                         className="rounded-md border border-amber-400 bg-amber-900/30 px-3 py-2 text-slate-100 hover:bg-amber-800/40"
-                        onClick={() => resetSession(s.id)}
+                        onClick={() => resetSession(session.id)}
                         type="button"
                       >
                         Сбросить попытку
                       </button>
                       <input
                         className={`${inputClass} min-w-80 text-sm`}
-                        defaultValue={s.adminOverride?.text || ""}
+                        defaultValue={session.adminOverride?.text || ""}
                         placeholder="Ручная корректировка рекомендации"
                         onBlur={(e) => {
                           if (!e.target.value.trim()) return;
-                          adminOverride(s.id, e.target.value);
+                          adminOverride(session.id, e.target.value);
                         }}
                       />
                       <span className="text-xs text-slate-400">Сохранение при выходе из поля.</span>
@@ -809,7 +1252,7 @@ export default function Home() {
                   </p>
                   <ul className="list-disc pl-5 text-slate-200">
                     {item.recommendations.length ? (
-                      item.recommendations.map((text, i) => <li key={`${item.campaign.id}-${i}`}>{text}</li>)
+                      item.recommendations.map((text, index) => <li key={`${item.campaign.id}-${index}`}>{text}</li>)
                     ) : (
                       <li>Рекомендаций пока нет.</li>
                     )}
@@ -855,11 +1298,18 @@ export default function Home() {
                 {store.campaigns.map((campaign) => {
                   const invalid = campaign.grade !== loggedChild.grade;
                   const completedLocked = childSessions.find(
-                    (s) => s.campaignId === campaign.id && s.status === "completed" && s.grade === loggedChild.grade,
+                    (session) =>
+                      session.campaignId === campaign.id &&
+                      session.status === "completed" &&
+                      session.grade === loggedChild.grade,
                   );
                   const ownSession = childSessions.find(
-                    (s) => s.campaignId === campaign.id && s.status !== "completed" && s.grade === loggedChild.grade,
+                    (session) =>
+                      session.campaignId === campaign.id &&
+                      session.status !== "completed" &&
+                      session.grade === loggedChild.grade,
                   );
+
                   return (
                     <li className="flex flex-wrap items-center gap-2 rounded-md border border-slate-700 bg-slate-900 p-2" key={campaign.id}>
                       <span className="text-slate-100">
@@ -888,22 +1338,52 @@ export default function Home() {
 
               <div className="space-y-3">
                 {childSessions
-                  .filter((s) => s.status !== "completed")
+                  .filter((session) => session.status !== "completed")
                   .map((session) => {
-                    const campaign = store.campaigns.find((c) => c.id === session.campaignId);
+                    const campaign = store.campaigns.find((item) => item.id === session.campaignId);
                     const questions = QUESTION_SETS[session.grade];
                     const question = questions[session.currentQuestionIndex];
                     const progressPct = Math.round((session.answers.length / questions.length) * 100);
+                    const batteries = BATTERIES[session.grade];
+                    const currentBattery = question ? batteries.find((item) => item.id === question.batteryId) : null;
+
                     return (
                       <div className="rounded-lg border border-slate-600 bg-slate-900 p-3" key={session.id}>
                         <p className="mb-2 font-medium text-white">
                           {campaign?.title ?? "Кампания"} · {session.grade} класс · статус: {session.status}
                         </p>
-                        <p className="mb-2 text-sm text-slate-200">Прогресс: {session.answers.length} / {questions.length} ({progressPct}%)</p>
+                        <p className="mb-2 text-sm text-slate-200">
+                          Прогресс батареи: {session.answers.length} / {questions.length} ({progressPct}%)
+                        </p>
+
+                        <div className="mb-3 grid gap-2 md:grid-cols-3">
+                          {batteries.map((battery) => {
+                            const batteryQuestions = questions.filter((q) => q.batteryId === battery.id);
+                            const answeredCount = session.answers.filter((answer) => answer.batteryId === battery.id).length;
+                            const finished = answeredCount >= batteryQuestions.length;
+                            return (
+                              <div
+                                key={`${session.id}-${battery.id}`}
+                                className={`rounded-md border p-2 text-xs ${
+                                  finished
+                                    ? "border-emerald-500 bg-emerald-900/20 text-emerald-200"
+                                    : "border-slate-600 bg-slate-800 text-slate-200"
+                                }`}
+                              >
+                                <p className="font-semibold">{battery.blockTitle}</p>
+                                <p>
+                                  Выполнено: {answeredCount}/{batteryQuestions.length}
+                                </p>
+                              </div>
+                            );
+                          })}
+                        </div>
 
                         {question ? (
                           <div className="rounded-md border border-slate-500 bg-slate-800 p-3">
-                            <p className="mb-1 text-xs font-semibold uppercase tracking-wide text-sky-300">{question.batteryLabel}</p>
+                            <p className="mb-1 text-xs font-semibold uppercase tracking-wide text-sky-300">
+                              {currentBattery?.blockTitle}
+                            </p>
                             <p className="mb-3 text-base text-slate-100">{question.prompt}</p>
                             <div className="grid gap-2">
                               {question.options.map((option, idx) => (
@@ -920,17 +1400,12 @@ export default function Home() {
                           </div>
                         ) : (
                           <p className="rounded-md border border-emerald-600 bg-emerald-950 p-3 text-sm text-emerald-200">
-                            Все вопросы батареи отвечены. Можно завершить тестирование.
+                            Все 3 блока завершены. Можно завершить диагностическую сессию.
                           </p>
                         )}
 
-                        <p className="mt-3 text-sm text-slate-200">Предварительная рекомендация: {session.recommendation || "—"}</p>
                         <div className="mt-2 flex gap-2">
-                          <button
-                            className={buttonSecondaryClass}
-                            onClick={() => pauseSession(session.id)}
-                            type="button"
-                          >
+                          <button className={buttonSecondaryClass} onClick={() => pauseSession(session.id)} type="button">
                             Сохранить и поставить на паузу
                           </button>
                           <button
@@ -944,7 +1419,7 @@ export default function Home() {
                       </div>
                     );
                   })}
-                {!childSessions.filter((s) => s.status !== "completed").length && (
+                {!childSessions.filter((session) => session.status !== "completed").length && (
                   <p className="text-sm text-slate-400">Активных или паузных сессий нет.</p>
                 )}
               </div>
@@ -953,16 +1428,12 @@ export default function Home() {
                 <h3 className="mb-2 font-semibold text-white">Завершенные сессии</h3>
                 <ul className="space-y-1 text-sm text-slate-200">
                   {childSessions
-                    .filter((s) => s.status === "completed")
-                    .map((s) => {
-                      const campaign = store.campaigns.find((c) => c.id === s.campaignId);
-                      return (
-                        <li key={s.id}>
-                          {campaign?.title ?? "Кампания"}: {s.adminOverride?.text || s.recommendation || "—"}
-                        </li>
-                      );
+                    .filter((session) => session.status === "completed")
+                    .map((session) => {
+                      const campaign = store.campaigns.find((item) => item.id === session.campaignId);
+                      return <li key={session.id}>{campaign?.title ?? "Кампания"}: Диагностика завершена.</li>;
                     })}
-                  {!childSessions.filter((s) => s.status === "completed").length && <li>Пока нет завершенных сессий.</li>}
+                  {!childSessions.filter((session) => session.status === "completed").length && <li>Пока нет завершенных сессий.</li>}
                 </ul>
               </div>
             </article>
