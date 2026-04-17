@@ -1,6 +1,7 @@
 "use client";
 
 import { FormEvent, useEffect, useMemo, useState } from "react";
+import { QUESTION_SETS } from "./itemBank";
 
 type Grade = 4 | 6;
 type ClassGroup = "4А" | "4Б" | "6А" | "6Б";
@@ -85,14 +86,6 @@ type Store = {
   sessions: Session[];
 };
 
-type Question = {
-  id: string;
-  batteryId: string;
-  prompt: string;
-  options: string[];
-  correctIndex: number;
-};
-
 type BatteryDefinition = {
   id: string;
   blockTitle: string;
@@ -139,748 +132,6 @@ const BATTERIES: Record<Grade, BatteryDefinition[]> = {
       shortTitle: "Способность к математике",
       min: 0,
       max: 100,
-    },
-  ],
-};
-
-const QUESTION_SETS: Record<Grade, Question[]> = {
-  4: [
-    {
-      id: "g4-i1",
-      batteryId: "intelligence_4",
-      prompt: "Продолжи ряд фигур: круг, квадрат, круг, квадрат, ...",
-      options: ["круг", "треугольник", "звезда", "овал"],
-      correctIndex: 0,
-    },
-    {
-      id: "g4-i2",
-      batteryId: "intelligence_4",
-      prompt: "В ряду многоугольников число углов растёт на 1: 3, 4, 5, ... Какая фигура дальше?",
-      options: ["круг", "шестиугольник", "квадрат", "пятиугольник"],
-      correctIndex: 1,
-    },
-    {
-      id: "g4-i3",
-      batteryId: "intelligence_4",
-      prompt: "Продолжи чередование: ▲ ▼ ▲ ▼ ...",
-      options: ["▲", "■", "●", "→"],
-      correctIndex: 0,
-    },
-    {
-      id: "g4-i4",
-      batteryId: "intelligence_4",
-      prompt: "Стрелка делает поворот на 90° по часовой стрелке каждый шаг. Какой она будет на 4-м шаге?",
-      options: ["слева", "в исходном положении", "вверх ногами", "справа"],
-      correctIndex: 1,
-    },
-    {
-      id: "g4-i5",
-      batteryId: "intelligence_4",
-      prompt: "Найди лишнюю фигуру: ⚪, ⚪, ⚪, 🔺.",
-      options: ["первый", "второй", "третий", "четвёртый"],
-      correctIndex: 3,
-    },
-    {
-      id: "g4-i6",
-      batteryId: "intelligence_4",
-      prompt: "Продолжи правило по количеству: 1 точка, 2 точки, 3 точки, ...",
-      options: ["2 точки", "3 точки", "4 точки", "5 точек"],
-      correctIndex: 2,
-    },
-    {
-      id: "g4-i7",
-      batteryId: "intelligence_4",
-      prompt: "Квадрат разделили на 4 равные части. Одну часть убрали. Сколько частей осталось?",
-      options: ["1", "2", "3", "4"],
-      correctIndex: 2,
-    },
-    {
-      id: "g4-i8",
-      batteryId: "intelligence_4",
-      prompt: "Продолжи ряд: круг, треугольник, квадрат, круг, треугольник, ...",
-      options: ["круг", "квадрат", "ромб", "звезда"],
-      correctIndex: 1,
-    },
-    {
-      id: "g4-i9",
-      batteryId: "intelligence_4",
-      prompt: "В таблице почти все стрелки смотрят вправо. Какой должна быть стрелка в пустой клетке, чтобы правило сохранилось?",
-      options: ["вправо", "влево", "вверх", "вниз"],
-      correctIndex: 0,
-    },
-    {
-      id: "g4-i10",
-      batteryId: "intelligence_4",
-      prompt: "Продолжи узор: ○, □, ○, □, ...",
-      options: ["○", "△", "☆", "⬟"],
-      correctIndex: 0,
-    },
-    {
-      id: "g4-i11",
-      batteryId: "intelligence_4",
-      prompt: "Какое число пропущено: 2, 4, 6, ..., 10?",
-      options: ["7", "8", "9", "11"],
-      correctIndex: 1,
-    },
-    {
-      id: "g4-i12",
-      batteryId: "intelligence_4",
-      prompt: "Стрелка смотрела вверх и повернулась вправо. Куда она смотрит теперь?",
-      options: ["вверх", "влево", "вправо", "вниз"],
-      correctIndex: 2,
-    },
-    {
-      id: "g4-i13",
-      batteryId: "intelligence_4",
-      prompt: "Найди лишнее число: 3, 6, 9, 10.",
-      options: ["3", "6", "9", "10"],
-      correctIndex: 3,
-    },
-    {
-      id: "g4-i14",
-      batteryId: "intelligence_4",
-      prompt: "Продолжи цветовой узор: 🔵🔴🔵🔴 ...",
-      options: ["🔵", "🟢", "🟡", "⚫"],
-      correctIndex: 0,
-    },
-    {
-      id: "g4-i15",
-      batteryId: "intelligence_4",
-      prompt: "В ряду по числу сторон: 3, 4, 5, ... какое число будет следующим?",
-      options: ["4", "5", "6", "7"],
-      correctIndex: 2,
-    },
-    {
-      id: "g4-l1",
-      batteryId: "logic_4",
-      prompt: "Что лишнее в группе: яблоко, груша, слива, стул?",
-      options: ["яблоко", "груша", "слива", "стул"],
-      correctIndex: 3,
-    },
-    {
-      id: "g4-l2",
-      batteryId: "logic_4",
-      prompt: "Продолжи порядок дней: понедельник, вторник, среда, ...",
-      options: ["пятница", "четверг", "суббота", "воскресенье"],
-      correctIndex: 1,
-    },
-    {
-      id: "g4-l3",
-      batteryId: "logic_4",
-      prompt: "Аналогия: котёнок — кошка, щенок — ...",
-      options: ["собаке", "корове", "кошке", "лисе"],
-      correctIndex: 0,
-    },
-    {
-      id: "g4-l4",
-      batteryId: "logic_4",
-      prompt: "Все карандаши подходят для письма. Синий предмет — карандаш. Какой вывод верный?",
-      options: ["Синий предмет — игрушка", "Синий предмет — для письма", "Синий предмет — книга", "Ничего нельзя сказать"],
-      correctIndex: 1,
-    },
-    {
-      id: "g4-l5",
-      batteryId: "logic_4",
-      prompt: "Если А больше Б, а Б больше В, кто самый маленький?",
-      options: ["А", "Б", "В", "Определить нельзя"],
-      correctIndex: 2,
-    },
-    {
-      id: "g4-l6",
-      batteryId: "logic_4",
-      prompt: "Какое правило в ряду 2, 4, 8, 16, ...?",
-      options: ["прибавить 2", "умножить на 2", "умножить на 3", "вычесть 2"],
-      correctIndex: 1,
-    },
-    {
-      id: "g4-l7",
-      batteryId: "logic_4",
-      prompt: "Порядок повторяется: маленький, средний, большой. Что будет следующим?",
-      options: ["большой", "средний", "маленький", "любой"],
-      correctIndex: 2,
-    },
-    {
-      id: "g4-l8",
-      batteryId: "logic_4",
-      prompt: "Если идёт дождь, улица мокрая. Улица мокрая. Какой вывод самый точный?",
-      options: ["Точно был дождь", "Мокрая улица может быть и по другой причине", "Дождя не было", "Улица сухая"],
-      correctIndex: 1,
-    },
-    {
-      id: "g4-l9",
-      batteryId: "logic_4",
-      prompt: "Книга : читать = мяч : ...",
-      options: ["бежать", "играть", "рисовать", "прыгать"],
-      correctIndex: 1,
-    },
-    {
-      id: "g4-l10",
-      batteryId: "logic_4",
-      prompt: "Все розы — цветы. Этот предмет — роза. Что верно?",
-      options: ["Это дерево", "Это цветок", "Это фрукт", "Ничего нельзя сказать"],
-      correctIndex: 1,
-    },
-    {
-      id: "g4-l11",
-      batteryId: "logic_4",
-      prompt: "Если сегодня вторник, какой день будет через 2 дня?",
-      options: ["среда", "четверг", "пятница", "суббота"],
-      correctIndex: 1,
-    },
-    {
-      id: "g4-l12",
-      batteryId: "logic_4",
-      prompt: "Что общего у слов «стол», «стул», «шкаф»?",
-      options: ["игрушки", "мебель", "овощи", "животные"],
-      correctIndex: 1,
-    },
-    {
-      id: "g4-l13",
-      batteryId: "logic_4",
-      prompt: "Если А выше Б, а Б выше В, кто выше всех?",
-      options: ["А", "Б", "В", "Нельзя узнать"],
-      correctIndex: 0,
-    },
-    {
-      id: "g4-l14",
-      batteryId: "logic_4",
-      prompt: "Продолжи чередование: красный, синий, красный, синий, ...",
-      options: ["зелёный", "жёлтый", "красный", "белый"],
-      correctIndex: 2,
-    },
-    {
-      id: "g4-l15",
-      batteryId: "logic_4",
-      prompt: "Если на улице снег, то холодно. Сейчас не холодно. Что можно заключить?",
-      options: ["Снег точно идёт", "Снега нет", "Снег и дождь вместе", "Ничего нельзя сказать"],
-      correctIndex: 1,
-    },
-    {
-      id: "g4-m1",
-      batteryId: "math_aptitude_4",
-      prompt: "Какое число ближе к 100?",
-      options: ["97", "92", "одинаково", "нельзя сравнить"],
-      correctIndex: 0,
-    },
-    {
-      id: "g4-m2",
-      batteryId: "math_aptitude_4",
-      prompt: "Одна шоколадка стоит 20 рублей. Сколько стоят 3 шоколадки?",
-      options: ["40", "50", "60", "70"],
-      correctIndex: 2,
-    },
-    {
-      id: "g4-m3",
-      batteryId: "math_aptitude_4",
-      prompt: "Продолжи ряд: 5, 10, 15, ...",
-      options: ["18", "20", "22", "25"],
-      correctIndex: 1,
-    },
-    {
-      id: "g4-m4",
-      batteryId: "math_aptitude_4",
-      prompt: "Какая дробь больше: 3/4 или 2/4?",
-      options: ["3/4", "2/4", "равны", "сравнить нельзя"],
-      correctIndex: 0,
-    },
-    {
-      id: "g4-m5",
-      batteryId: "math_aptitude_4",
-      prompt: "У Пети 12 карандашей, у Оли на 4 меньше. Сколько карандашей у Оли?",
-      options: ["6", "7", "8", "9"],
-      correctIndex: 2,
-    },
-    {
-      id: "g4-m6",
-      batteryId: "math_aptitude_4",
-      prompt: "Квадрат с диагональю повернули на 180°. Какой вариант совпадёт с исходным?",
-      options: ["тот же", "зеркальный", "перевёрнутый треугольник", "пустой"],
-      correctIndex: 0,
-    },
-    {
-      id: "g4-m7",
-      batteryId: "math_aptitude_4",
-      prompt: "Сравни числа 48 и 84.",
-      options: ["48 > 84", "48 < 84", "48 = 84", "сравнить нельзя"],
-      correctIndex: 1,
-    },
-    {
-      id: "g4-m8",
-      batteryId: "math_aptitude_4",
-      prompt: "Есть 2 ряда по 5 кружков. Сколько кружков всего?",
-      options: ["7", "8", "10", "12"],
-      correctIndex: 2,
-    },
-    {
-      id: "g4-m9",
-      batteryId: "math_aptitude_4",
-      prompt: "Найди следующее число: 2, 3, 5, 8, ...",
-      options: ["10", "11", "12", "13"],
-      correctIndex: 3,
-    },
-    {
-      id: "g4-m10",
-      batteryId: "math_aptitude_4",
-      prompt: "Сколько будет 9 + 6?",
-      options: ["13", "14", "15", "16"],
-      correctIndex: 2,
-    },
-    {
-      id: "g4-m11",
-      batteryId: "math_aptitude_4",
-      prompt: "У Маши было 5 яблок, дали ещё 4. Сколько стало?",
-      options: ["8", "9", "10", "11"],
-      correctIndex: 1,
-    },
-    {
-      id: "g4-m12",
-      batteryId: "math_aptitude_4",
-      prompt: "Какое число больше: 56 или 65?",
-      options: ["56", "65", "они равны", "сравнить нельзя"],
-      correctIndex: 1,
-    },
-    {
-      id: "g4-m13",
-      batteryId: "math_aptitude_4",
-      prompt: "Сколько минут в получасе?",
-      options: ["20", "25", "30", "40"],
-      correctIndex: 2,
-    },
-    {
-      id: "g4-m14",
-      batteryId: "math_aptitude_4",
-      prompt: "Продолжи ряд: 4, 8, 12, ...",
-      options: ["14", "15", "16", "18"],
-      correctIndex: 2,
-    },
-    {
-      id: "g4-m15",
-      batteryId: "math_aptitude_4",
-      prompt: "В коробке 10 карандашей. 3 взяли. Сколько осталось?",
-      options: ["6", "7", "8", "9"],
-      correctIndex: 1,
-    },
-  ],
-  6: [
-    {
-      id: "g6-i1",
-      batteryId: "intelligence_6",
-      prompt: "В матрице число углов в строке увеличивается на 1. Какой элемент должен стоять в пустой клетке?",
-      options: ["квадрат", "пятиугольник", "шестиугольник", "треугольник"],
-      correctIndex: 2,
-    },
-    {
-      id: "g6-i2",
-      batteryId: "intelligence_6",
-      prompt: "Фигура на каждом шаге поворачивается на 90° и меняет цвет. Что получится на 4-м шаге?",
-      options: ["исходная форма и цвет", "другой цвет", "зеркальная форма", "форма исчезнет"],
-      correctIndex: 0,
-    },
-    {
-      id: "g6-i3",
-      batteryId: "intelligence_6",
-      prompt: "Последовательность строится так: AB, BAA, ABBB, ... Какой элемент следующий?",
-      options: ["ABBBBA", "ABBBB", "AABBBB", "BAAAA"],
-      correctIndex: 2,
-    },
-    {
-      id: "g6-i4",
-      batteryId: "intelligence_6",
-      prompt: "К фигуре применяют два действия: поворот на 90° и сдвиг вправо. Где окажется результат?",
-      options: ["в левом верхнем углу", "в правом верхнем углу", "в центре", "в левом нижнем углу"],
-      correctIndex: 1,
-    },
-    {
-      id: "g6-i5",
-      batteryId: "intelligence_6",
-      prompt: "Найди элемент, который нарушает одновременно правило числа и формы.",
-      options: ["2▲", "4▲", "6■", "8▲"],
-      correctIndex: 2,
-    },
-    {
-      id: "g6-i6",
-      batteryId: "intelligence_6",
-      prompt: "Сначала число увеличивают на 2, затем результат удваивают. Какой будет выход для числа 5?",
-      options: ["12", "14", "16", "20"],
-      correctIndex: 2,
-    },
-    {
-      id: "g6-i7",
-      batteryId: "intelligence_6",
-      prompt: "Выбери вариант, который завершает матрицу, где по диагоналям чередуются типы преобразований.",
-      options: ["зеркало", "поворот", "масштаб", "комбинация поворота и зеркала"],
-      correctIndex: 3,
-    },
-    {
-      id: "g6-i8",
-      batteryId: "intelligence_6",
-      prompt: "В ряду 3, 6, 12, 24 применяется один и тот же оператор. Какое число следующее?",
-      options: ["30", "36", "42", "48"],
-      correctIndex: 3,
-    },
-    {
-      id: "g6-i9",
-      batteryId: "intelligence_6",
-      prompt: "По правилу фигуры с нечётным числом сторон тёмные, с чётным — светлые. Какая фигура должна быть тёмной?",
-      options: ["квадрат", "шестиугольник", "пятиугольник", "восьмиугольник"],
-      correctIndex: 2,
-    },
-    {
-      id: "g6-i10",
-      batteryId: "intelligence_6",
-      prompt: "Какой вариант одновременно сохраняет порядок символов и правило направления стрелки?",
-      options: ["A→B", "B→A", "A←B", "B←A"],
-      correctIndex: 3,
-    },
-    {
-      id: "g6-i11",
-      batteryId: "intelligence_6",
-      prompt: "В каждой строке матрицы увеличивается число сторон и меняется цвет. Что в пустой клетке?",
-      options: ["белый пятиугольник", "чёрный пятиугольник", "белый шестиугольник", "чёрный шестиугольник"],
-      correctIndex: 1,
-    },
-    {
-      id: "g6-i12",
-      batteryId: "intelligence_6",
-      prompt: "Последовательность задана формулой f(n+1)=2f(n)-1, при f(1)=3. Найди f(4).",
-      options: ["15", "17", "19", "21"],
-      correctIndex: 2,
-    },
-    {
-      id: "g6-i13",
-      batteryId: "intelligence_6",
-      prompt: "Во второй, четвёртой и т.д. позиции буква сдвигается на одну вперёд в алфавите. Что получится из «КОТ»?",
-      options: ["КПТ", "ЛОУ", "КПУ", "ЛПТ"],
-      correctIndex: 0,
-    },
-    {
-      id: "g6-i14",
-      batteryId: "intelligence_6",
-      prompt: "Фигуру отражают по вертикали, затем поворачивают на 90° по часовой. Какое одно преобразование этому эквивалентно?",
-      options: ["поворот на 180°", "отражение по диагонали", "сдвиг вправо", "масштабирование"],
-      correctIndex: 1,
-    },
-    {
-      id: "g6-i15",
-      batteryId: "intelligence_6",
-      prompt: "Выбери элемент, который продолжает ряд сразу по двум признакам: числу и цвету.",
-      options: ["7 тёмный", "8 светлый", "9 тёмный", "10 светлый"],
-      correctIndex: 2,
-    },
-    {
-      id: "g6-i16",
-      batteryId: "intelligence_6",
-      prompt: "Оператор ◇ означает «умножить на 3 и вычесть 2». Чему равно 5◇?",
-      options: ["11", "12", "13", "14"],
-      correctIndex: 2,
-    },
-    {
-      id: "g6-i17",
-      batteryId: "intelligence_6",
-      prompt: "Точка смещается по правилу (+2; −1) каждый шаг. Где будет точка (1;4) через 2 шага?",
-      options: ["(3;3)", "(5;2)", "(5;3)", "(4;2)"],
-      correctIndex: 1,
-    },
-    {
-      id: "g6-i18",
-      batteryId: "intelligence_6",
-      prompt: "Найди следующий элемент ряда: B2, D4, F6, ...",
-      options: ["G7", "H8", "I9", "J10"],
-      correctIndex: 1,
-    },
-    {
-      id: "g6-i19",
-      batteryId: "intelligence_6",
-      prompt: "Если в коде △=2, □=3, чему равна сумма символов в записи «△□△»?",
-      options: ["6", "7", "8", "9"],
-      correctIndex: 1,
-    },
-    {
-      id: "g6-i20",
-      batteryId: "intelligence_6",
-      prompt: "Каждая следующая строка — циклический сдвиг предыдущей на 1 вправо. Какой вариант верный?",
-      options: ["ABC → BCA", "ABC → CAB", "ABC → CBA", "ABC → ACB"],
-      correctIndex: 1,
-    },
-    {
-      id: "g6-l1",
-      batteryId: "logic_6",
-      prompt: "Все M являются N, и ни один N не является P. Что обязательно верно?",
-      options: ["Некоторые M — это P", "Ни один M не является P", "Все P являются M", "Нельзя сделать вывод"],
-      correctIndex: 1,
-    },
-    {
-      id: "g6-l2",
-      batteryId: "logic_6",
-      prompt: "Если верно «Если идёт дождь, матч отменяют», а матч не отменили, что следует?",
-      options: ["Дождь точно был", "Дождя не было", "Матч всё равно отменён", "Ничего нельзя вывести"],
-      correctIndex: 1,
-    },
-    {
-      id: "g6-l3",
-      batteryId: "logic_6",
-      prompt: "Выбери корректное следствие из посылок: «Некоторые A — B. Все B — C».",
-      options: ["Некоторые A — C", "Все A — C", "Ни один A — C", "Все C — A"],
-      correctIndex: 0,
-    },
-    {
-      id: "g6-l4",
-      batteryId: "logic_6",
-      prompt: "Какая схема рассуждения логически корректна?",
-      options: ["Если X, то Y. Y, значит X", "Если X, то Y. Не Y, значит не X", "X или Y. X, значит Y", "Если X, то Y. X, значит не Y"],
-      correctIndex: 1,
-    },
-    {
-      id: "g6-l5",
-      batteryId: "logic_6",
-      prompt: "Какое утверждение противоречит остальным и не может быть истинным вместе с ними?",
-      options: ["Все ученики пришли", "Некоторые ученики опоздали", "Ни один ученик не отсутствует", "Один ученик не пришёл"],
-      correctIndex: 3,
-    },
-    {
-      id: "g6-l6",
-      batteryId: "logic_6",
-      prompt: "Если A → B и B → C, что можно заключить о связи A и C?",
-      options: ["A → C", "C → A", "A ↔ C", "Связи нет"],
-      correctIndex: 0,
-    },
-    {
-      id: "g6-l7",
-      batteryId: "logic_6",
-      prompt: "Либо K, либо L. Не K. Какой вывод корректен?",
-      options: ["Не L", "L", "K", "Ни K, ни L"],
-      correctIndex: 1,
-    },
-    {
-      id: "g6-l8",
-      batteryId: "logic_6",
-      prompt: "«Все R — S. Некоторые S — T». Какой вывод корректен?",
-      options: ["Все R — T", "Некоторые T — R", "R и T могут не пересекаться", "Ни один R — S"],
-      correctIndex: 2,
-    },
-    {
-      id: "g6-l9",
-      batteryId: "logic_6",
-      prompt: "Какой аргумент является слабым обобщением по одному примеру?",
-      options: ["Один ученик любит геометрию, значит все любят геометрию", "Все чётные делятся на 2", "Если лёд нагреть, он тает", "Треугольник имеет три стороны"],
-      correctIndex: 0,
-    },
-    {
-      id: "g6-l10",
-      batteryId: "logic_6",
-      prompt: "Что является необходимым условием в высказывании: «Чтобы сдать зачёт, нужно решить все базовые задачи»?",
-      options: ["Если решены все базовые задачи, зачёт гарантирован", "Без решения всех базовых задач зачёт невозможен", "Зачёт не зависит от задач", "Решить можно только сложные задачи"],
-      correctIndex: 1,
-    },
-    {
-      id: "g6-l11",
-      batteryId: "logic_6",
-      prompt: "Из посылок «Все A — B» и «Некоторые C — A» следует, что:",
-      options: ["Некоторые C — B", "Все C — B", "Ни один C — B", "Вывода нет"],
-      correctIndex: 0,
-    },
-    {
-      id: "g6-l12",
-      batteryId: "logic_6",
-      prompt: "Какой вывод корректен: «Если P, то Q. Если Q, то R. P»?",
-      options: ["Не R", "R", "Не Q", "Q и не R"],
-      correctIndex: 1,
-    },
-    {
-      id: "g6-l13",
-      batteryId: "logic_6",
-      prompt: "Какую логическую ошибку содержит рассуждение про талисман и пятёрку?",
-      options: ["Подмена тезиса", "Ложная причина", "Круг в доказательстве", "Ложная дилемма"],
-      correctIndex: 1,
-    },
-    {
-      id: "g6-l14",
-      batteryId: "logic_6",
-      prompt: "Если верно «Либо X, либо Y», и известно, что Y ложно, что следует?",
-      options: ["X ложно", "X истинно", "Ничего", "X и Y истинны"],
-      correctIndex: 1,
-    },
-    {
-      id: "g6-l15",
-      batteryId: "logic_6",
-      prompt: "Какая формулировка эквивалентна выражению «Не (A и B)»?",
-      options: ["Не A и не B", "Не A или не B", "A или B", "A и не B"],
-      correctIndex: 1,
-    },
-    {
-      id: "g6-l16",
-      batteryId: "logic_6",
-      prompt: "Из утверждения «Все олимпиадники решают задачи» что НЕ следует?",
-      options: ["Некоторые решающие задачи — олимпиадники", "Если человек не решает задачи, он не олимпиадник", "Каждый олимпиадник решает задачи", "Любой решающий задачи — олимпиадник"],
-      correctIndex: 3,
-    },
-    {
-      id: "g6-l17",
-      batteryId: "logic_6",
-      prompt: "Что является контрпримером к тезису «Все простые числа нечётные»?",
-      options: ["1", "2", "3", "5"],
-      correctIndex: 1,
-    },
-    {
-      id: "g6-l18",
-      batteryId: "logic_6",
-      prompt: "Если истинно «Некоторые M — N», какое утверждение обязательно истинно?",
-      options: ["Все M — N", "Некоторые N — M", "Ни один M — N", "Все N — M"],
-      correctIndex: 1,
-    },
-    {
-      id: "g6-l19",
-      batteryId: "logic_6",
-      prompt: "Какой вывод корректен из фразы «Не верно, что все задачи лёгкие»?",
-      options: ["Все задачи трудные", "Некоторые задачи не лёгкие", "Ни одна задача не лёгкая", "Есть ровно одна трудная задача"],
-      correctIndex: 1,
-    },
-    {
-      id: "g6-l20",
-      batteryId: "logic_6",
-      prompt: "Какая схема рассуждения корректна?",
-      options: ["Если A, то B. B. Значит A", "Если A, то B. Не A. Значит не B", "Если A, то B. A. Значит B", "A или B. B. Значит не A"],
-      correctIndex: 2,
-    },
-    {
-      id: "g6-m1",
-      batteryId: "math_aptitude_6",
-      prompt: "Продолжи числовую структуру: 2, 6, 12, 20, ...",
-      options: ["28", "30", "32", "36"],
-      correctIndex: 1,
-    },
-    {
-      id: "g6-m2",
-      batteryId: "math_aptitude_6",
-      prompt: "На весах: слева 2 одинаковых куба и гиря 3 кг, справа 11 кг. Сколько весит один куб?",
-      options: ["3 кг", "4 кг", "5 кг", "6 кг"],
-      correctIndex: 1,
-    },
-    {
-      id: "g6-m3",
-      batteryId: "math_aptitude_6",
-      prompt: "Сколько разных пар можно составить из 5 учеников?",
-      options: ["5", "8", "10", "20"],
-      correctIndex: 2,
-    },
-    {
-      id: "g6-m4",
-      batteryId: "math_aptitude_6",
-      prompt: "Скорость увеличили с 40 до 60 км/ч. Во сколько раз она выросла?",
-      options: ["в 1.2 раза", "в 1.5 раза", "в 2 раза", "в 2.5 раза"],
-      correctIndex: 1,
-    },
-    {
-      id: "g6-m5",
-      batteryId: "math_aptitude_6",
-      prompt: "Какое выражение описывает стоимость x тетрадей по 18 рублей и одного альбома за 70 рублей?",
-      options: ["18 + 70x", "18x + 70", "70x + 18", "18x - 70"],
-      correctIndex: 1,
-    },
-    {
-      id: "g6-m6",
-      batteryId: "math_aptitude_6",
-      prompt: "Паттерн задаётся формулой n² − 1. Чему равно значение при n = 6?",
-      options: ["33", "35", "36", "37"],
-      correctIndex: 1,
-    },
-    {
-      id: "g6-m7",
-      batteryId: "math_aptitude_6",
-      prompt: "3 ручки стоят столько же, сколько 2 блокнота. Ручка стоит 12 рублей. Сколько стоит блокнот?",
-      options: ["12", "16", "18", "20"],
-      correctIndex: 2,
-    },
-    {
-      id: "g6-m8",
-      batteryId: "math_aptitude_6",
-      prompt: "В ряду количеств прибавляют по 3: 4, 7, 10, ... Что дальше?",
-      options: ["11", "12", "13", "14"],
-      correctIndex: 2,
-    },
-    {
-      id: "g6-m9",
-      batteryId: "math_aptitude_6",
-      prompt: "Сколько способов выбрать капитана и заместителя из 4 человек?",
-      options: ["6", "8", "10", "12"],
-      correctIndex: 3,
-    },
-    {
-      id: "g6-m10",
-      batteryId: "math_aptitude_6",
-      prompt: "Какое число продолжает ряд квадратов: 1, 4, 9, 16, ...?",
-      options: ["20", "24", "25", "27"],
-      correctIndex: 2,
-    },
-    {
-      id: "g6-m11",
-      batteryId: "math_aptitude_6",
-      prompt: "Реши уравнение: 3x + 5 = 26.",
-      options: ["6", "7", "8", "9"],
-      correctIndex: 1,
-    },
-    {
-      id: "g6-m12",
-      batteryId: "math_aptitude_6",
-      prompt: "Найди значение: 2² + 3² + 4².",
-      options: ["25", "27", "29", "31"],
-      correctIndex: 2,
-    },
-    {
-      id: "g6-m13",
-      batteryId: "math_aptitude_6",
-      prompt: "В классе 24 ученика. 3/8 класса участвуют в кружке. Сколько это учеников?",
-      options: ["6", "8", "9", "12"],
-      correctIndex: 2,
-    },
-    {
-      id: "g6-m14",
-      batteryId: "math_aptitude_6",
-      prompt: "Поезд прошёл 180 км за 3 часа. Какова средняя скорость?",
-      options: ["50 км/ч", "55 км/ч", "60 км/ч", "65 км/ч"],
-      correctIndex: 2,
-    },
-    {
-      id: "g6-m15",
-      batteryId: "math_aptitude_6",
-      prompt: "Периметр квадрата 36 см. Чему равна площадь квадрата?",
-      options: ["64 см²", "72 см²", "81 см²", "96 см²"],
-      correctIndex: 2,
-    },
-    {
-      id: "g6-m16",
-      batteryId: "math_aptitude_6",
-      prompt: "Сколько процентов составляет 15 от 60?",
-      options: ["20%", "25%", "30%", "35%"],
-      correctIndex: 1,
-    },
-    {
-      id: "g6-m17",
-      batteryId: "math_aptitude_6",
-      prompt: "Найди следующий член арифметической прогрессии: 7, 11, 15, ...",
-      options: ["17", "18", "19", "20"],
-      correctIndex: 2,
-    },
-    {
-      id: "g6-m18",
-      batteryId: "math_aptitude_6",
-      prompt: "Сколько диагоналей у пятиугольника?",
-      options: ["4", "5", "6", "7"],
-      correctIndex: 1,
-    },
-    {
-      id: "g6-m19",
-      batteryId: "math_aptitude_6",
-      prompt: "На сколько процентов число 80 больше числа 50?",
-      options: ["40%", "50%", "60%", "80%"],
-      correctIndex: 2,
-    },
-    {
-      id: "g6-m20",
-      batteryId: "math_aptitude_6",
-      prompt: "Если a = 3 и b = 5, чему равно 2a + 3b?",
-      options: ["19", "21", "23", "25"],
-      correctIndex: 1,
     },
   ],
 };
@@ -939,6 +190,66 @@ function domainFocusLabel(batteryId: string): string {
   return "количественного рассуждения и работы со структурой";
 }
 
+function batteryLabel(batteryId: string): string {
+  if (batteryId.includes("intelligence")) return "Интеллект";
+  if (batteryId.includes("logic")) return "Логика";
+  return "Способность к математике";
+}
+
+function subskillLabel(subskill: string): string {
+  const labels: Record<string, string> = {
+    "pattern detection": "распознавании паттернов",
+    transformation: "преобразованиях",
+    abstraction: "абстрагировании",
+    "missing-part reasoning": "поиске недостающей части",
+    classification: "классификации",
+    ordering: "упорядочивании",
+    "relation consistency": "согласованности отношений",
+    "simple/advanced inference": "формальных выводах",
+    "number pattern": "числовых закономерностях",
+    "quantity comparison": "сравнении величин",
+    "proportional reasoning": "пропорциональном рассуждении",
+    "structural quantitative modeling": "количественном моделировании",
+    "spatial-quantitative reasoning": "пространственно-количественных задачах",
+  };
+  return labels[subskill] ?? subskill;
+}
+
+function subskillDiagnostics(grade: Grade, answers: SessionAnswer[], batteryId?: string): string[] {
+  const questionPool = QUESTION_SETS[grade].filter((q) => (batteryId ? q.batteryId === batteryId : true));
+  if (!questionPool.length) return [];
+
+  const byQuestion = new Map(questionPool.map((q) => [q.id, q]));
+  const grouped = new Map<string, { correct: number; total: number }>();
+
+  for (const answer of answers) {
+    const q = byQuestion.get(answer.questionId);
+    if (!q) continue;
+    const entry = grouped.get(q.subskill) ?? { correct: 0, total: 0 };
+    entry.total += 1;
+    if (answer.isCorrect) entry.correct += 1;
+    grouped.set(q.subskill, entry);
+  }
+
+  const stats = [...grouped.entries()].map(([subskill, value]) => ({
+    subskill,
+    total: value.total,
+    accuracy: value.total ? value.correct / value.total : 0,
+  }));
+  if (!stats.length) return [];
+
+  const strongest = [...stats].sort((a, b) => b.accuracy - a.accuracy || b.total - a.total)[0];
+  const weakest = [...stats].sort((a, b) => a.accuracy - b.accuracy || b.total - a.total)[0];
+  const messages = [
+    `Относительно сильнее проявляется результат в ${subskillLabel(strongest.subskill)}.`,
+  ];
+  if (strongest.subskill !== weakest.subskill) {
+    messages.push(`Зона внимания: поддержка в ${subskillLabel(weakest.subskill)}.`);
+  }
+  messages.push("Интерпретация ориентировочная и требует сопоставления с наблюдением педагога/психолога.");
+  return messages;
+}
+
 function interpretationFromScaled(batteryId: string, scaled: number): string {
   const focus = domainFocusLabel(batteryId);
   if (scaled >= 9) return `Выраженно сильный результат в зоне ${focus}; уместны задания повышенной сложности.`;
@@ -992,16 +303,25 @@ function computeRecommendation(grade: Grade, scores: SessionScore[]): string {
   const min = Math.min(...scaled);
   const max = Math.max(...scaled);
   const spread = max - min;
+  const strongestDomain = relevant.reduce((best, battery) => {
+    const score = scores.find((s) => s.batteryId === battery.id)?.scaledScore ?? 1;
+    return score > best.score ? { score, batteryId: battery.id } : best;
+  }, { score: 0, batteryId: relevant[0].id });
+  const weakestDomain = relevant.reduce((worst, battery) => {
+    const score = scores.find((s) => s.batteryId === battery.id)?.scaledScore ?? 10;
+    return score < worst.score ? { score, batteryId: battery.id } : worst;
+  }, { score: 11, batteryId: relevant[0].id });
+  const profileNote = `Относительно сильный домен: ${batteryLabel(strongestDomain.batteryId)}; зона развития: ${batteryLabel(weakestDomain.batteryId)}.`;
 
   if (avg >= 8) {
-    return `Предварительно: расширенный профиль с углублёнными задачами. Основание: средний доменный балл ${avg.toFixed(1)}/10, выраженных провалов не наблюдается. Решение требует очной профессиональной верификации.`;
+    return `Предварительная рекомендация: маршрут с углублёнными задачами и контролем темпа. Основание: средний доменный балл ${avg.toFixed(1)}/10. ${profileNote} Вывод не является окончательным решением и требует очной профессиональной верификации.`;
   }
 
   if (avg >= 5) {
-    return `Предварительно: базовый профиль с адресной поддержкой по отдельным доменам. Основание: средний доменный балл ${avg.toFixed(1)}/10, разброс результатов ${spread} балл(а). Рекомендация носит консультативный характер.`;
+    return `Предварительная рекомендация: базовый маршрут с адресной поддержкой по отдельным зонам. Основание: средний доменный балл ${avg.toFixed(1)}/10, разброс результатов ${spread} балл(а). ${profileNote} Рекомендация консультативная и не заменяет профессиональное заключение.`;
   }
 
-  return `Предварительно: поддерживающий маршрут с поэтапным усилением базовых навыков. Основание: средний доменный балл ${avg.toFixed(1)}/10, минимальный доменный показатель ${min}/10. Нужна дополнительная оценка специалистом и наблюдение в динамике.`;
+  return `Предварительная рекомендация: поддерживающий маршрут с поэтапным усилением базовых навыков. Основание: средний доменный балл ${avg.toFixed(1)}/10, минимальный доменный показатель ${min}/10. ${profileNote} Нужна дополнительная оценка специалистом и наблюдение в динамике; автоматическое решение по одной сессии недопустимо.`;
 }
 
 function normalizeAnswers(grade: Grade, answers: Session["answers"]): SessionAnswer[] {
@@ -1744,15 +1064,25 @@ export default function Home() {
               <div className="mb-3 rounded-md border border-sky-700/70 bg-sky-950/30 p-3 text-xs text-sky-100">
                 <p className="font-semibold text-sky-200">Методологическая пометка</p>
                 <ul className="mt-1 list-disc space-y-1 pl-5">
-                  <li>Результаты батарей являются предварительными и подходят для ориентировочной навигации.</li>
-                  <li>Окончательное решение по распределению в класс/группу принимается только после профессионального разбора.</li>
-                  <li>Ни один отдельный домен или одна попытка не являются окончательным вердиктом.</li>
+                  <li>Это прототип диагностической батареи: результаты предварительные и ориентировочные.</li>
+                  <li>Рекомендации носят консультативный характер и не являются итоговым заключением.</li>
+                  <li>Финальное образовательное решение требует очного профессионального разбора.</li>
+                  <li>Автоматическое окончательное решение по одной сессии принимать нельзя.</li>
                 </ul>
               </div>
               <ul className="space-y-3">
                 {completedSessions.map((session) => {
                   const child = store.children.find((item) => item.id === session.childId);
                   const recommendation = session.adminOverride?.text || session.recommendation;
+                  const domainSubskillNotes = BATTERIES[session.grade].map((battery) => ({
+                    batteryId: battery.id,
+                    title: battery.shortTitle,
+                    notes: subskillDiagnostics(
+                      session.grade,
+                      session.answers.filter((answer) => answer.batteryId === battery.id),
+                      battery.id,
+                    ),
+                  }));
 
                   return (
                     <li className="rounded-md border border-slate-700 bg-slate-900 p-3" key={session.id}>
@@ -1788,6 +1118,22 @@ export default function Home() {
                             })}
                           </tbody>
                         </table>
+                      </div>
+
+                      <div className="mb-3 rounded-md border border-violet-700/60 bg-violet-950/20 p-3 text-xs text-violet-100">
+                        <p className="mb-2 font-semibold text-violet-200">Субнавыковая интерпретация (ориентировочно)</p>
+                        <ul className="space-y-2">
+                          {domainSubskillNotes.map((domainItem) => (
+                            <li key={`${session.id}-${domainItem.batteryId}`}>
+                              <p className="font-medium">{domainItem.title}</p>
+                              <ul className="list-disc pl-5">
+                                {(domainItem.notes.length ? domainItem.notes : ["Недостаточно данных для интерпретации."]).map((note, idx) => (
+                                  <li key={`${session.id}-${domainItem.batteryId}-${idx}`}>{note}</li>
+                                ))}
+                              </ul>
+                            </li>
+                          ))}
+                        </ul>
                       </div>
 
                       <div className="flex flex-wrap gap-2">
