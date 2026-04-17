@@ -1061,6 +1061,12 @@ function adminStatusLabel(session: Session): string {
 
 type AccessCodeStatus = "Выдан" | "Активен" | "Использован" | "Завершён" | "Переоткрыт" | "Сброшен";
 
+const ACCESS_CODE_FORMAT = /^[A-Z0-9]{6}$/;
+
+function normalizeAccessCode(input: string): string {
+  return input.toUpperCase().replace(/\s+/g, "").trim();
+}
+
 function maskAccessCode(code: string): string {
   if (code.length <= 4) return "••••";
   return `${"•".repeat(Math.max(4, code.length - 4))}${code.slice(-4)}`;
@@ -1122,7 +1128,10 @@ export default function Home() {
     window.localStorage.setItem(STORAGE_KEY, JSON.stringify({ ...store, campaigns: FIXED_CAMPAIGNS }));
   }, [store]);
 
-  const childrenByCode = useMemo(() => new Map(store.children.map((child) => [child.accessCode, child])), [store.children]);
+  const childrenByCode = useMemo(
+    () => new Map(store.children.map((child) => [normalizeAccessCode(child.accessCode), child])),
+    [store.children],
+  );
   const loggedChild = loggedChildId ? store.children.find((child) => child.id === loggedChildId) : null;
 
   const childSessions = useMemo(
@@ -1167,10 +1176,25 @@ export default function Home() {
 
   function loginChild(e: FormEvent): void {
     e.preventDefault();
-    const normalizedCode = loginCode.trim().toUpperCase();
+    const normalizedCode = normalizeAccessCode(loginCode);
+    if (!ACCESS_CODE_FORMAT.test(normalizedCode)) {
+      show("error", "Неверный формат кода. Используйте 6 символов без пробелов.");
+      return;
+    }
+
     const child = childrenByCode.get(normalizedCode);
     if (!child) {
       show("error", "Код не найден. Проверьте ввод.");
+      return;
+    }
+
+    const status = accessCodeStatus(child, store.sessions);
+    if (status === "Завершён") {
+      show("error", "Тестирование по этому коду уже завершено.");
+      return;
+    }
+    if (status === "Сброшен") {
+      show("error", "Код сброшен администратором и недействителен. Обратитесь к администратору.");
       return;
     }
 
