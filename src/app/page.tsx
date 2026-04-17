@@ -88,6 +88,7 @@ type BatteryDefinition = {
 
 const STORAGE_KEY = "school-profiler-store-v1";
 const ADMIN_PIN = "4321";
+const DEMO_ADMIN_HELPER_ENABLED = process.env.NODE_ENV !== "production";
 const CLASS_GROUPS: ClassGroup[] = ["4А", "4Б", "6А", "6Б"];
 
 function gradeFromClassGroup(group: ClassGroup): Grade {
@@ -1112,6 +1113,7 @@ export default function Home() {
   const [message, setMessage] = useState<{ type: "ok" | "error"; text: string } | null>(null);
   const [adminPinInput, setAdminPinInput] = useState("");
   const [adminUnlocked, setAdminUnlocked] = useState(false);
+  const [demoPinVisible, setDemoPinVisible] = useState(false);
   const [childClassGroup, setChildClassGroup] = useState<ClassGroup>("4А");
   const [loginCode, setLoginCode] = useState("");
   const [loggedChildId, setLoggedChildId] = useState<string | null>(null);
@@ -1488,6 +1490,19 @@ export default function Home() {
                   Открыть админ-режим
                 </button>
               </form>
+              {DEMO_ADMIN_HELPER_ENABLED && (
+                <div className="mt-3 rounded-md border border-amber-500/50 bg-amber-950/30 p-3 text-sm text-amber-100">
+                  <p className="mb-2 text-xs uppercase tracking-wide text-amber-300">Только для MVP/демо</p>
+                  <button
+                    className={buttonSecondaryClass}
+                    onClick={() => setDemoPinVisible((prev) => !prev)}
+                    type="button"
+                  >
+                    {demoPinVisible ? "Скрыть тестовый PIN" : "Показать тестовый PIN"}
+                  </button>
+                  {demoPinVisible && <p className="mt-2 font-mono text-base text-amber-200">{ADMIN_PIN}</p>}
+                </div>
+              )}
             </article>
           </section>
         ) : (
