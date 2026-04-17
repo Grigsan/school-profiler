@@ -177,6 +177,48 @@ const QUESTION_SETS: Record<Grade, Question[]> = {
       correctIndex: 0,
     },
     {
+      id: "g4-i10",
+      batteryId: "intelligence_4",
+      prompt: "Продолжи ряд фигур: ○, □, ○, □, ...",
+      options: ["○", "△", "☆", "⬟"],
+      correctIndex: 0,
+    },
+    {
+      id: "g4-i11",
+      batteryId: "intelligence_4",
+      prompt: "Какое число пропущено: 2, 4, 6, ..., 10?",
+      options: ["7", "8", "9", "11"],
+      correctIndex: 1,
+    },
+    {
+      id: "g4-i12",
+      batteryId: "intelligence_4",
+      prompt: "Если стрелка была вверх и повернулась вправо, куда она смотрит?",
+      options: ["вверх", "влево", "вправо", "вниз"],
+      correctIndex: 2,
+    },
+    {
+      id: "g4-i13",
+      batteryId: "intelligence_4",
+      prompt: "Что лишнее: 3, 6, 9, 10?",
+      options: ["3", "6", "9", "10"],
+      correctIndex: 3,
+    },
+    {
+      id: "g4-i14",
+      batteryId: "intelligence_4",
+      prompt: "Какой узор повторяется: 🔵🔴🔵🔴 ... ?",
+      options: ["🔵", "🟢", "🟡", "⚫"],
+      correctIndex: 0,
+    },
+    {
+      id: "g4-i15",
+      batteryId: "intelligence_4",
+      prompt: "Сколько сторон у фигуры после треугольника по порядку 3, 4, 5, ...?",
+      options: ["4", "5", "6", "7"],
+      correctIndex: 2,
+    },
+    {
       id: "g4-l1",
       batteryId: "logic_4",
       prompt: "Найди лишнее: яблоко, груша, слива, стул.",
@@ -237,6 +279,48 @@ const QUESTION_SETS: Record<Grade, Question[]> = {
       batteryId: "logic_4",
       prompt: "Книга : читать = мяч : ...",
       options: ["бежать", "играть", "рисовать", "прыгать"],
+      correctIndex: 1,
+    },
+    {
+      id: "g4-l10",
+      batteryId: "logic_4",
+      prompt: "Все розы — цветы. Этот предмет — роза. Что верно?",
+      options: ["Это дерево", "Это цветок", "Это фрукт", "Ничего нельзя сказать"],
+      correctIndex: 1,
+    },
+    {
+      id: "g4-l11",
+      batteryId: "logic_4",
+      prompt: "Если сегодня вторник, какой день будет через 2 дня?",
+      options: ["среда", "четверг", "пятница", "суббота"],
+      correctIndex: 1,
+    },
+    {
+      id: "g4-l12",
+      batteryId: "logic_4",
+      prompt: "Что общее у слов «стол», «стул», «шкаф»?",
+      options: ["игрушки", "мебель", "овощи", "животные"],
+      correctIndex: 1,
+    },
+    {
+      id: "g4-l13",
+      batteryId: "logic_4",
+      prompt: "Если А выше Б, а Б выше В, кто выше всех?",
+      options: ["А", "Б", "В", "Нельзя узнать"],
+      correctIndex: 0,
+    },
+    {
+      id: "g4-l14",
+      batteryId: "logic_4",
+      prompt: "Продолжи правило: красный, синий, красный, синий, ...",
+      options: ["зелёный", "жёлтый", "красный", "белый"],
+      correctIndex: 2,
+    },
+    {
+      id: "g4-l15",
+      batteryId: "logic_4",
+      prompt: "Если на улице снег, то холодно. Сейчас не холодно. Что верно?",
+      options: ["Снег точно идёт", "Снега нет", "Снег и дождь вместе", "Ничего нельзя сказать"],
       correctIndex: 1,
     },
     {
@@ -301,6 +385,48 @@ const QUESTION_SETS: Record<Grade, Question[]> = {
       prompt: "Какое число должно быть в пропуске: 2, 3, 5, 8, ...",
       options: ["10", "11", "12", "13"],
       correctIndex: 3,
+    },
+    {
+      id: "g4-m10",
+      batteryId: "math_aptitude_4",
+      prompt: "Сколько будет: 9 + 6?",
+      options: ["13", "14", "15", "16"],
+      correctIndex: 2,
+    },
+    {
+      id: "g4-m11",
+      batteryId: "math_aptitude_4",
+      prompt: "У Маши 5 яблок, дали ещё 4. Сколько стало?",
+      options: ["8", "9", "10", "11"],
+      correctIndex: 1,
+    },
+    {
+      id: "g4-m12",
+      batteryId: "math_aptitude_4",
+      prompt: "Какое число больше: 56 или 65?",
+      options: ["56", "65", "они равны", "сравнить нельзя"],
+      correctIndex: 1,
+    },
+    {
+      id: "g4-m13",
+      batteryId: "math_aptitude_4",
+      prompt: "Сколько минут в получасе?",
+      options: ["20", "25", "30", "40"],
+      correctIndex: 2,
+    },
+    {
+      id: "g4-m14",
+      batteryId: "math_aptitude_4",
+      prompt: "Продолжи ряд: 4, 8, 12, ...",
+      options: ["14", "15", "16", "18"],
+      correctIndex: 2,
+    },
+    {
+      id: "g4-m15",
+      batteryId: "math_aptitude_4",
+      prompt: "В коробке 10 карандашей. 3 взяли. Сколько осталось?",
+      options: ["6", "7", "8", "9"],
+      correctIndex: 1,
     },
   ],
   6: [
@@ -375,6 +501,76 @@ const QUESTION_SETS: Record<Grade, Question[]> = {
       correctIndex: 3,
     },
     {
+      id: "g6-i11",
+      batteryId: "intelligence_6",
+      prompt: "Матрица преобразований: каждая строка увеличивает число сторон на 1 и инвертирует цвет. Что в пустой ячейке?",
+      options: ["белый пятиугольник", "чёрный пятиугольник", "белый шестиугольник", "чёрный шестиугольник"],
+      correctIndex: 1,
+    },
+    {
+      id: "g6-i12",
+      batteryId: "intelligence_6",
+      prompt: "Последовательность задаётся правилом f(n+1)=2f(n)-1, f(1)=3. Найди f(4).",
+      options: ["15", "17", "19", "21"],
+      correctIndex: 2,
+    },
+    {
+      id: "g6-i13",
+      batteryId: "intelligence_6",
+      prompt: "В коде символов каждая вторая буква сдвигается на 1 позицию в алфавите. Что получится из «КОТ»?",
+      options: ["КПТ", "ЛОУ", "КПУ", "ЛПТ"],
+      correctIndex: 0,
+    },
+    {
+      id: "g6-i14",
+      batteryId: "intelligence_6",
+      prompt: "Если каждая фигура отражается по вертикали, затем поворачивается на 90° по часовой, какой тип преобразования эквивалентен?",
+      options: ["поворот на 180°", "отражение по диагонали", "сдвиг вправо", "масштабирование"],
+      correctIndex: 1,
+    },
+    {
+      id: "g6-i15",
+      batteryId: "intelligence_6",
+      prompt: "Выбери элемент, который завершает ряд по двум признакам: рост числа и смена чётности цвета.",
+      options: ["7 тёмный", "8 светлый", "9 тёмный", "10 светлый"],
+      correctIndex: 2,
+    },
+    {
+      id: "g6-i16",
+      batteryId: "intelligence_6",
+      prompt: "Если оператор ◇ означает «умножить на 3 и вычесть 2», чему равно 5◇?",
+      options: ["11", "12", "13", "14"],
+      correctIndex: 2,
+    },
+    {
+      id: "g6-i17",
+      batteryId: "intelligence_6",
+      prompt: "В таблице координат точка смещается по правилу (+2; -1) каждый шаг. Где будет точка из (1;4) через 2 шага?",
+      options: ["(3;3)", "(5;2)", "(5;3)", "(4;2)"],
+      correctIndex: 1,
+    },
+    {
+      id: "g6-i18",
+      batteryId: "intelligence_6",
+      prompt: "Найди закономерность: B2, D4, F6, ...",
+      options: ["G7", "H8", "I9", "J10"],
+      correctIndex: 1,
+    },
+    {
+      id: "g6-i19",
+      batteryId: "intelligence_6",
+      prompt: "Если в системе кодирования «△=2, □=3», чему равно «△□△» как сумма символов?",
+      options: ["6", "7", "8", "9"],
+      correctIndex: 1,
+    },
+    {
+      id: "g6-i20",
+      batteryId: "intelligence_6",
+      prompt: "Какой вариант поддерживает правило: каждая следующая строка — циклический сдвиг предыдущей на 1 вправо?",
+      options: ["ABC → BCA", "ABC → CAB", "ABC → CBA", "ABC → ACB"],
+      correctIndex: 1,
+    },
+    {
       id: "g6-l1",
       batteryId: "logic_6",
       prompt: "Если все M являются N, и ни один N не является P, что верно?",
@@ -445,6 +641,76 @@ const QUESTION_SETS: Record<Grade, Question[]> = {
       correctIndex: 1,
     },
     {
+      id: "g6-l11",
+      batteryId: "logic_6",
+      prompt: "Из посылок «Все A — B» и «Некоторые C — A» следует, что:",
+      options: ["Некоторые C — B", "Все C — B", "Ни один C — B", "Вывода нет"],
+      correctIndex: 0,
+    },
+    {
+      id: "g6-l12",
+      batteryId: "logic_6",
+      prompt: "Какой вывод корректен: «Если P, то Q. Если Q, то R. P»?",
+      options: ["Не R", "R", "Не Q", "Q и не R"],
+      correctIndex: 1,
+    },
+    {
+      id: "g6-l13",
+      batteryId: "logic_6",
+      prompt: "Определи логическую ошибку: «После того как ученик взял талисман, он получил пятёрку, значит талисман приносит пятёрки».",
+      options: ["Подмена тезиса", "Ложная причина", "Круг в доказательстве", "Ложная дилемма"],
+      correctIndex: 1,
+    },
+    {
+      id: "g6-l14",
+      batteryId: "logic_6",
+      prompt: "Если верно «Либо X, либо Y», и дополнительно известно «Y ложно», что следует?",
+      options: ["X ложно", "X истинно", "Ничего", "X и Y истинны"],
+      correctIndex: 1,
+    },
+    {
+      id: "g6-l15",
+      batteryId: "logic_6",
+      prompt: "Какая из формулировок эквивалентна «Не (A и B)»?",
+      options: ["Не A и не B", "Не A или не B", "A или B", "A и не B"],
+      correctIndex: 1,
+    },
+    {
+      id: "g6-l16",
+      batteryId: "logic_6",
+      prompt: "Из утверждения «Все олимпиадники решают задачи» НЕ следует, что:",
+      options: ["Некоторые решающие задачи — олимпиадники", "Если человек не решает задачи, он не олимпиадник", "Каждый олимпиадник решает задачи", "Существуют решающие задачи люди"],
+      correctIndex: 3,
+    },
+    {
+      id: "g6-l17",
+      batteryId: "logic_6",
+      prompt: "Что является контрпримером к тезису «Все простые числа нечётные»?",
+      options: ["1", "2", "3", "5"],
+      correctIndex: 1,
+    },
+    {
+      id: "g6-l18",
+      batteryId: "logic_6",
+      prompt: "Если «Некоторые M — N» истинно, какое утверждение обязательно истинно?",
+      options: ["Все M — N", "Некоторые N — M", "Ни один M — N", "Все N — M"],
+      correctIndex: 1,
+    },
+    {
+      id: "g6-l19",
+      batteryId: "logic_6",
+      prompt: "Какой вывод корректен: «Не верно, что все задачи лёгкие»?",
+      options: ["Все задачи трудные", "Некоторые задачи не лёгкие", "Ни одна задача не лёгкая", "Есть ровно одна трудная задача"],
+      correctIndex: 1,
+    },
+    {
+      id: "g6-l20",
+      batteryId: "logic_6",
+      prompt: "Какая схема рассуждения корректна?",
+      options: ["Если A, то B. B. Значит A", "Если A, то B. Не A. Значит не B", "Если A, то B. A. Значит B", "A или B. B. Значит не A"],
+      correctIndex: 2,
+    },
+    {
       id: "g6-m1",
       batteryId: "math_aptitude_6",
       prompt: "Продолжи структуру: 2, 6, 12, 20, ...",
@@ -513,6 +779,76 @@ const QUESTION_SETS: Record<Grade, Question[]> = {
       prompt: "Какое значение лучше всего продолжает обобщение: 1, 4, 9, 16, ...",
       options: ["20", "24", "25", "27"],
       correctIndex: 2,
+    },
+    {
+      id: "g6-m11",
+      batteryId: "math_aptitude_6",
+      prompt: "Реши уравнение: 3x + 5 = 26.",
+      options: ["6", "7", "8", "9"],
+      correctIndex: 1,
+    },
+    {
+      id: "g6-m12",
+      batteryId: "math_aptitude_6",
+      prompt: "Найди значение выражения: 2² + 3² + 4².",
+      options: ["25", "27", "29", "31"],
+      correctIndex: 2,
+    },
+    {
+      id: "g6-m13",
+      batteryId: "math_aptitude_6",
+      prompt: "В классе 24 ученика. 3/8 класса участвуют в кружке. Сколько это учеников?",
+      options: ["6", "8", "9", "12"],
+      correctIndex: 2,
+    },
+    {
+      id: "g6-m14",
+      batteryId: "math_aptitude_6",
+      prompt: "Поезд прошёл 180 км за 3 часа. Какова средняя скорость?",
+      options: ["50 км/ч", "55 км/ч", "60 км/ч", "65 км/ч"],
+      correctIndex: 2,
+    },
+    {
+      id: "g6-m15",
+      batteryId: "math_aptitude_6",
+      prompt: "Если периметр квадрата 36 см, чему равна его площадь?",
+      options: ["64 см²", "72 см²", "81 см²", "96 см²"],
+      correctIndex: 2,
+    },
+    {
+      id: "g6-m16",
+      batteryId: "math_aptitude_6",
+      prompt: "Сколько процентов составляет 15 от 60?",
+      options: ["20%", "25%", "30%", "35%"],
+      correctIndex: 1,
+    },
+    {
+      id: "g6-m17",
+      batteryId: "math_aptitude_6",
+      prompt: "Найди следующий член арифметической прогрессии: 7, 11, 15, ...",
+      options: ["17", "18", "19", "20"],
+      correctIndex: 2,
+    },
+    {
+      id: "g6-m18",
+      batteryId: "math_aptitude_6",
+      prompt: "Сколько диагоналей у пятиугольника?",
+      options: ["4", "5", "6", "7"],
+      correctIndex: 1,
+    },
+    {
+      id: "g6-m19",
+      batteryId: "math_aptitude_6",
+      prompt: "На сколько процентов число 80 больше числа 50?",
+      options: ["40%", "50%", "60%", "80%"],
+      correctIndex: 2,
+    },
+    {
+      id: "g6-m20",
+      batteryId: "math_aptitude_6",
+      prompt: "Если a = 3 и b = 5, чему равно 2a + 3b?",
+      options: ["19", "21", "23", "25"],
+      correctIndex: 1,
     },
   ],
 };
@@ -707,8 +1043,18 @@ function accessCodeStatus(child: Child, sessions: Session[]): AccessCodeStatus {
 
 function isSessionComplete(session: Session): boolean {
   const gradeQuestions = QUESTION_SETS[session.grade];
-  const expected = gradeQuestions.length;
-  return session.answers.length >= expected;
+  const allAnswered = session.answers.length >= gradeQuestions.length;
+  if (!allAnswered) return false;
+
+  const byBattery = new Map<string, number>();
+  for (const answer of session.answers) {
+    byBattery.set(answer.batteryId, (byBattery.get(answer.batteryId) ?? 0) + 1);
+  }
+
+  return BATTERIES[session.grade].every((battery) => {
+    const batteryTotal = gradeQuestions.filter((question) => question.batteryId === battery.id).length;
+    return (byBattery.get(battery.id) ?? 0) >= batteryTotal;
+  });
 }
 
 export default function Home() {
