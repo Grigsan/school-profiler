@@ -684,6 +684,27 @@ function adminStatusLabel(session: Session): string {
   return "на паузе";
 }
 
+type AccessCodeStatus = "Выдан" | "Активен" | "Использован" | "Завершён" | "Переоткрыт" | "Сброшен";
+
+function maskAccessCode(code: string): string {
+  if (code.length <= 4) return "••••";
+  return `${"•".repeat(Math.max(4, code.length - 4))}${code.slice(-4)}`;
+}
+
+function accessCodeStatus(child: Child, sessions: Session[]): AccessCodeStatus {
+  const childSessions = sessions.filter((session) => session.childId === child.id);
+  if (!childSessions.length) return "Выдан";
+
+  const hasCompleted = childSessions.some((session) => session.status === "completed");
+  if (hasCompleted) return "Завершён";
+
+  const mostRecent = [...childSessions].sort((a, b) => toTimestamp(b.startedAt) - toTimestamp(a.startedAt))[0];
+  if (mostRecent.adminState === "reopened") return "Переоткрыт";
+  if (mostRecent.adminState === "reset") return "Сброшен";
+  if (mostRecent.status === "active") return "Активен";
+  return "Использован";
+}
+
 function isSessionComplete(session: Session): boolean {
   const gradeQuestions = QUESTION_SETS[session.grade];
   const expected = gradeQuestions.length;
@@ -1037,12 +1058,25 @@ export default function Home() {
 
   const completedSessions = store.sessions.filter((session) => session.status === "completed");
   const incompleteSessions = store.sessions.filter((session) => session.status !== "completed");
+  const hasChildUsedCode = useMemo(() => {
+    const usedIds = new Set<string>();
+    store.sessions.forEach((session) => usedIds.add(session.childId));
+    return usedIds;
+  }, [store.sessions]);
 
   const campaignSummary = store.campaigns.map((campaign) => {
     const items = store.sessions.filter((session) => session.campaignId === campaign.id && session.status === "completed");
     const recommendations = items.map((session) => session.adminOverride?.text || session.recommendation).filter(Boolean);
     return { campaign, done: items.length, recommendations };
   });
+
+  const childVisibleSessions = loggedChild
+    ? childSessions.filter((session) => {
+        if (session.status === "completed") return false;
+        const lockedByCompletion = childSessions.some((item) => item.campaignId === session.campaignId && item.status === "completed");
+        return !lockedByCompletion;
+      })
+    : [];
 
   return (
     <div className="mx-auto min-h-screen max-w-6xl bg-slate-950 p-6 font-sans text-slate-100">
@@ -1137,16 +1171,22 @@ export default function Home() {
                     <th className="p-2">Registry ID</th>
                     <th className="p-2">Класс</th>
                     <th className="p-2">Код</th>
+                    <th className="p-2">Статус кода</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {store.children.map((child) => (
-                    <tr className="border-t border-slate-700" key={child.id}>
-                      <td className="p-2">{child.registryId}</td>
-                      <td className="p-2">{child.grade}</td>
-                      <td className="p-2 font-mono text-sky-300">{child.accessCode}</td>
-                    </tr>
-                  ))}
+                  {store.children.map((child) => {
+                    const status = accessCodeStatus(child, store.sessions);
+                    const shouldMask = hasChildUsedCode.has(child.id) || status === "Завершён";
+                    return (
+                      <tr className="border-t border-slate-700" key={child.id}>
+                        <td className="p-2">{child.registryId}</td>
+                        <td className="p-2">{child.grade}</td>
+                        <td className="p-2 font-mono text-sky-300">{shouldMask ? maskAccessCode(child.accessCode) : child.accessCode}</td>
+                        <td className="p-2">{status}</td>
+                      </tr>
+                    );
+                  })}
                 </tbody>
               </table>
             </div>
@@ -1214,16 +1254,6 @@ export default function Home() {
                     </div>
 
                     <div className="flex flex-wrap gap-2">
-                      <button className={buttonSecondaryClass} onClick={() => reopenSession(session.id)} type="button">
-                        Переоткрыть попытку
-                      </button>
-                      <button
-                        className="rounded-md border border-amber-400 bg-amber-900/30 px-3 py-2 text-slate-100 hover:bg-amber-800/40"
-                        onClick={() => resetSession(session.id)}
-                        type="button"
-                      >
-                        Сбросить попытку
-                      </button>
                       <input
                         className={`${inputClass} min-w-80 text-sm`}
                         defaultValue={session.adminOverride?.text || ""}
@@ -1235,6 +1265,28 @@ export default function Home() {
                       />
                       <span className="text-xs text-slate-400">Сохранение при выходе из поля.</span>
                     </div>
+                    <details className="mt-3 rounded-md border border-amber-700/70 bg-amber-950/20 p-3">
+                      <summary className="cursor-pointer text-sm font-semibold text-amber-200">Действия администратора (восстановление)</summary>
+                      <p className="mt-2 text-xs text-amber-100">
+                        Внимание: эти действия аварийные и могут снова открыть доступ к завершенной попытке.
+                      </p>
+                      <div className="mt-3 flex flex-wrap gap-2">
+                        <button
+                          className="rounded-md border border-amber-300 bg-amber-900/40 px-3 py-2 text-slate-100 hover:bg-amber-800/50"
+                          onClick={() => reopenSession(session.id)}
+                          type="button"
+                        >
+                          Переоткрыть попытку (админ)
+                        </button>
+                        <button
+                          className="rounded-md border border-rose-300 bg-rose-900/40 px-3 py-2 text-slate-100 hover:bg-rose-800/50"
+                          onClick={() => resetSession(session.id)}
+                          type="button"
+                        >
+                          Сбросить попытку (админ)
+                        </button>
+                      </div>
+                    </details>
                   </li>
                 );
               })}
@@ -1337,9 +1389,7 @@ export default function Home() {
               </ul>
 
               <div className="space-y-3">
-                {childSessions
-                  .filter((session) => session.status !== "completed")
-                  .map((session) => {
+                {childVisibleSessions.map((session) => {
                     const campaign = store.campaigns.find((item) => item.id === session.campaignId);
                     const questions = QUESTION_SETS[session.grade];
                     const question = questions[session.currentQuestionIndex];
@@ -1419,9 +1469,21 @@ export default function Home() {
                       </div>
                     );
                   })}
-                {!childSessions.filter((session) => session.status !== "completed").length && (
+                {!childVisibleSessions.length && (
                   <p className="text-sm text-slate-400">Активных или паузных сессий нет.</p>
                 )}
+                {store.campaigns
+                  .filter((campaign) =>
+                    childSessions.some((session) => session.campaignId === campaign.id && session.status === "completed"),
+                  )
+                  .map((campaign) => (
+                    <p
+                      key={`locked-${campaign.id}`}
+                      className="rounded-md border border-amber-600 bg-amber-950/40 p-3 text-sm text-amber-100"
+                    >
+                      {campaign.title}: Тестирование по этой кампании уже завершено. Повторный проход недоступен.
+                    </p>
+                  ))}
               </div>
 
               <div className="mt-5 rounded-md border border-slate-600 bg-slate-900 p-3">
