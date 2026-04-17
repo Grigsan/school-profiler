@@ -4,6 +4,7 @@ import { FormEvent, useEffect, useMemo, useState } from "react";
 
 type Grade = 4 | 6;
 type SessionStatus = "active" | "paused" | "completed";
+type SessionAdminState = "default" | "reset" | "reopened";
 
 type Child = {
   id: string;
@@ -51,6 +52,7 @@ type Session = {
   currentQuestionIndex: number;
   recommendation: string;
   adminOverride?: RecommendationOverride;
+  adminState?: SessionAdminState;
 };
 
 type Store = {
@@ -192,6 +194,60 @@ const EMPTY_STORE: Store = {
   sessions: [],
 };
 
+function sessionKey(session: Pick<Session, "childId" | "campaignId">): string {
+  return `${session.childId}::${session.campaignId}`;
+}
+
+function normalizeStore(raw: Store): Store {
+  const sessions = (raw.sessions ?? []).map((s) => ({
+    ...s,
+    answers: s.answers ?? [],
+    currentQuestionIndex: s.currentQuestionIndex ?? (s.answers?.length ?? 0),
+    adminState: s.adminState ?? "default",
+  }));
+
+  const completedByPair = new Map<string, Session[]>();
+  for (const session of sessions) {
+    if (session.status !== "completed") continue;
+    const key = sessionKey(session);
+    completedByPair.set(key, [...(completedByPair.get(key) ?? []), session]);
+  }
+
+  const demotedCompleted = new Set<string>();
+  completedByPair.forEach((items) => {
+    if (items.length <= 1) return;
+    const sorted = [...items].sort((a, b) => {
+      const aTime = new Date(a.completedAt ?? a.startedAt).getTime();
+      const bTime = new Date(b.completedAt ?? b.startedAt).getTime();
+      return bTime - aTime;
+    });
+    sorted.slice(1).forEach((session) => demotedCompleted.add(session.id));
+  });
+
+  const normalizedSessions = sessions.map((session) => {
+    if (!demotedCompleted.has(session.id)) return session;
+    const nextScores = computeScoresFromAnswers(session.grade, session.answers);
+    const nextRecommendation = computeRecommendation(session.grade, nextScores);
+    const totalQuestions = QUESTION_SETS[session.grade].length;
+    return {
+      ...session,
+      status: "paused" as const,
+      completedAt: undefined,
+      pausedAt: new Date().toISOString(),
+      currentQuestionIndex: Math.min(session.answers.length, totalQuestions),
+      scores: nextScores,
+      recommendation: nextRecommendation,
+      adminState: "reset" as const,
+    };
+  });
+
+  return {
+    children: raw.children ?? [],
+    campaigns: raw.campaigns ?? [],
+    sessions: normalizedSessions,
+  };
+}
+
 const cardClass = "rounded-lg border border-slate-700 bg-slate-900 p-4 shadow-sm";
 const buttonSecondaryClass =
   "rounded-md border border-slate-500 bg-slate-800 px-3 py-2 text-slate-100 hover:border-slate-300 hover:bg-slate-700 disabled:cursor-not-allowed disabled:opacity-50";
@@ -238,6 +294,13 @@ function toCsv(rows: string[][]): string {
     .join("\n");
 }
 
+function adminStatusLabel(session: Session): string {
+  if (session.status === "completed") return "завершена и заблокирована";
+  if (session.status === "active") return "в процессе";
+  if (session.adminState === "reset" || session.adminState === "reopened") return "сброшена/переоткрыта";
+  return "на паузе";
+}
+
 export default function Home() {
   const [store, setStore] = useState<Store>(() => {
     if (typeof window === "undefined") {
@@ -249,15 +312,7 @@ export default function Home() {
     }
     try {
       const parsed = JSON.parse(raw) as Store;
-      return {
-        children: parsed.children ?? [],
-        campaigns: parsed.campaigns ?? [],
-        sessions: (parsed.sessions ?? []).map((s) => ({
-          ...s,
-          answers: s.answers ?? [],
-          currentQuestionIndex: s.currentQuestionIndex ?? (s.answers?.length ?? 0),
-        })),
-      };
+      return normalizeStore(parsed);
     } catch {
       return EMPTY_STORE;
     }
@@ -349,6 +404,13 @@ export default function Home() {
       show("error", "Нельзя смешивать 4 и 6 классы в одной сессии.");
       return;
     }
+    const existingCompleted = store.sessions.find(
+      (s) => s.childId === child.id && s.campaignId === campaign.id && s.status === "completed" && s.grade === child.grade,
+    );
+    if (existingCompleted) {
+      show("error", "Тестирование по этой кампании уже завершено. Повторный проход недоступен.");
+      return;
+    }
     const existingActiveOrPaused = store.sessions.find(
       (s) =>
         s.childId === child.id &&
@@ -434,6 +496,14 @@ export default function Home() {
     const target = store.sessions.find((s) => s.id === sessionId);
     if (!target) return;
 
+    const duplicateCompleted = store.sessions.find(
+      (s) => s.id !== target.id && s.childId === target.childId && s.campaignId === target.campaignId && s.status === "completed",
+    );
+    if (duplicateCompleted) {
+      show("error", "Для этой кампании уже есть завершенная попытка. Дублирование запрещено.");
+      return;
+    }
+
     const requiredDone = target.answers.length >= QUESTION_SETS[target.grade].length;
     if (!requiredDone) {
       show("error", "Для завершения необходимо ответить на все вопросы батареи.");
@@ -449,10 +519,57 @@ export default function Home() {
           status: "completed",
           completedAt: new Date().toISOString(),
           recommendation: computeRecommendation(s.grade, s.scores),
+          adminState: "default",
         };
       }),
     }));
     show("ok", "Сессия завершена.");
+  }
+
+  function resetSession(sessionId: string) {
+    setStore((prev) => ({
+      ...prev,
+      sessions: prev.sessions.map((s) => {
+        if (s.id !== sessionId) return s;
+        return {
+          ...s,
+          status: "paused",
+          startedAt: new Date().toISOString(),
+          pausedAt: new Date().toISOString(),
+          completedAt: undefined,
+          answers: [],
+          currentQuestionIndex: 0,
+          scores: BATTERIES[s.grade].map((b) => ({ batteryId: b.id, value: 0 })),
+          recommendation: "",
+          adminState: "reset",
+        };
+      }),
+    }));
+    show("ok", "Попытка сброшена администратором. Ученик может пройти заново.");
+  }
+
+  function reopenSession(sessionId: string) {
+    setStore((prev) => ({
+      ...prev,
+      sessions: prev.sessions.map((s) => {
+        if (s.id !== sessionId) return s;
+        const totalQuestions = QUESTION_SETS[s.grade].length;
+        const trimmedAnswers = s.answers.length >= totalQuestions ? s.answers.slice(0, totalQuestions - 1) : s.answers;
+        const nextScores = computeScoresFromAnswers(s.grade, trimmedAnswers);
+        return {
+          ...s,
+          status: "paused",
+          pausedAt: new Date().toISOString(),
+          completedAt: undefined,
+          answers: trimmedAnswers,
+          currentQuestionIndex: Math.min(trimmedAnswers.length, totalQuestions),
+          scores: nextScores,
+          recommendation: computeRecommendation(s.grade, nextScores),
+          adminState: "reopened",
+        };
+      }),
+    }));
+    show("ok", "Попытка переоткрыта администратором.");
   }
 
   function adminOverride(sessionId: string, text: string) {
@@ -623,7 +740,8 @@ export default function Home() {
                 const campaign = store.campaigns.find((c) => c.id === s.campaignId);
                 return (
                   <li className="rounded-md border border-slate-700 bg-slate-900 p-2" key={s.id}>
-                    {campaign?.title ?? "Кампания удалена"} · {child?.registryId ?? "Профиль удален"} · {s.grade} класс · статус: {s.status}
+                    {campaign?.title ?? "Кампания удалена"} · {child?.registryId ?? "Профиль удален"} · {s.grade} класс · статус:{" "}
+                    {adminStatusLabel(s)}
                   </li>
                 );
               })}
@@ -643,11 +761,26 @@ export default function Home() {
                     <p className="text-sm text-slate-200">
                       {campaign?.title ?? "Кампания удалена"} · {child?.registryId ?? "Профиль удален"} · {s.grade} класс
                     </p>
+                    <p className="mb-1 text-xs uppercase tracking-wide text-amber-300">Статус: {adminStatusLabel(s)}</p>
                     <p className="mb-2 text-sm text-slate-100">Итог: {rec || "—"}</p>
                     <p className="mb-2 text-xs text-slate-300">
                       Баллы: {s.scores.map((score) => `${BATTERIES[s.grade].find((b) => b.id === score.batteryId)?.label}: ${score.value}`).join(" · ")}
                     </p>
                     <div className="flex flex-wrap gap-2">
+                      <button
+                        className={buttonSecondaryClass}
+                        onClick={() => reopenSession(s.id)}
+                        type="button"
+                      >
+                        Переоткрыть попытку
+                      </button>
+                      <button
+                        className="rounded-md border border-amber-400 bg-amber-900/30 px-3 py-2 text-slate-100 hover:bg-amber-800/40"
+                        onClick={() => resetSession(s.id)}
+                        type="button"
+                      >
+                        Сбросить попытку
+                      </button>
                       <input
                         className={`${inputClass} min-w-80 text-sm`}
                         defaultValue={s.adminOverride?.text || ""}
@@ -721,6 +854,9 @@ export default function Home() {
               <ul className="mb-4 space-y-2">
                 {store.campaigns.map((campaign) => {
                   const invalid = campaign.grade !== loggedChild.grade;
+                  const completedLocked = childSessions.find(
+                    (s) => s.campaignId === campaign.id && s.status === "completed" && s.grade === loggedChild.grade,
+                  );
                   const ownSession = childSessions.find(
                     (s) => s.campaignId === campaign.id && s.status !== "completed" && s.grade === loggedChild.grade,
                   );
@@ -729,15 +865,22 @@ export default function Home() {
                       <span className="text-slate-100">
                         {campaign.title} · {campaign.grade} класс
                       </span>
-                      <button
-                        className={buttonSecondaryClass}
-                        disabled={invalid}
-                        onClick={() => startOrResume(loggedChild, campaign.id)}
-                        type="button"
-                      >
-                        {ownSession ? "Продолжить" : "Начать"}
-                      </button>
+                      {!completedLocked && (
+                        <button
+                          className={buttonSecondaryClass}
+                          disabled={invalid}
+                          onClick={() => startOrResume(loggedChild, campaign.id)}
+                          type="button"
+                        >
+                          {ownSession ? "Продолжить" : "Начать"}
+                        </button>
+                      )}
                       {invalid && <span className="text-xs text-rose-300">Недоступно: другой класс.</span>}
+                      {completedLocked && (
+                        <span className="text-xs text-amber-300">
+                          Тестирование по этой кампании уже завершено. Повторный проход недоступен.
+                        </span>
+                      )}
                     </li>
                   );
                 })}
