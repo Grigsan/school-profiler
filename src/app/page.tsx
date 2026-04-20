@@ -1936,9 +1936,9 @@ export default function Home() {
                         <div className="rounded-md border border-sky-700/70 bg-sky-950/30 p-3 text-xs text-sky-100">
                           <p className="font-semibold text-sky-200">Методологическая пометка</p>
                           <ul className="mt-1 list-disc space-y-1 pl-5">
-                            <li>Результаты предварительные.</li>
-                            <li>Рекомендации носят консультативный характер.</li>
-                            <li>Финальное образовательное решение требует очного профессионального разбора.</li>
+                            <li>Результат предварительный.</li>
+                            <li>Носит консультативный характер.</li>
+                            <li>Итоговое решение требует профессионального рассмотрения.</li>
                           </ul>
                         </div>
 
@@ -1946,6 +1946,12 @@ export default function Home() {
                           <p className="text-sm font-semibold text-slate-100">Графики индивидуального отчёта специалиста</p>
                           <p className="mt-1 text-xs text-slate-300">
                             Визуализации встроены в отчёт и интерпретируются совместно с таблицей доменных результатов.
+                          </p>
+                        </div>
+                        <div className="rounded-md border border-slate-700 bg-slate-950/70 p-3 text-xs text-slate-300">
+                          <p className="font-semibold text-slate-100">Структурированная секция для PDF/Excel</p>
+                          <p className="mt-1">
+                            Карточка ученика, доменная таблица, методологическая пометка и графики выше собраны в печатный макет и поддерживают копирование/скачивание TSV для последующей выгрузки.
                           </p>
                         </div>
 
@@ -2161,7 +2167,7 @@ export default function Home() {
             </article>
 
             <article className={`${cardClass} md:col-span-2`}>
-              <h2 className="mb-3 text-lg font-semibold text-white">Сводка по классам (4А / 4Б / 6А / 6Б)</h2>
+              <h2 className="mb-3 text-lg font-semibold text-white">Сводка специалиста по классам (4А / 4Б / 6А / 6Б)</h2>
               <div className="mb-3">
                 <label className="text-sm text-slate-200">
                   Класс для аналитики
@@ -2264,6 +2270,12 @@ export default function Home() {
                     </div>
                   </div>
                 ))}
+              <div className="rounded-md border border-slate-700 bg-slate-950/70 p-3 text-xs text-slate-300">
+                <p className="font-semibold text-slate-100">Структурированная секция для PDF/Excel</p>
+                <p className="mt-1">
+                  Блоки «Рабочая сводка класса», «Графики сводки», а также TSV-кнопки выше предназначены для прямого копирования в документы специалиста и последующего экспорта.
+                </p>
+              </div>
               <div className="mt-4 rounded-md border border-slate-700 bg-slate-950/70 p-3">
                 <p className="text-sm font-semibold text-slate-100">Графики сводки по классу</p>
                 <p className="mt-1 text-xs text-slate-300">
