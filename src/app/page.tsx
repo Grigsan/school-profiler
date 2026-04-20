@@ -1,6 +1,23 @@
 "use client";
 
 import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
+import {
+  Bar,
+  BarChart,
+  CartesianGrid,
+  Cell,
+  Legend,
+  PolarAngleAxis,
+  PolarGrid,
+  Radar,
+  RadarChart,
+  ResponsiveContainer,
+  Scatter,
+  ScatterChart,
+  Tooltip,
+  XAxis,
+  YAxis,
+} from "recharts";
 import { QUESTION_SETS } from "./itemBank";
 
 type Grade = 4 | 6;
@@ -88,6 +105,16 @@ type ClassSummaryRow = {
   expertReviewNeeded: number;
   recommendationDistribution: Array<{ label: string; count: number }>;
   domainDifficultyHighlights: string[];
+};
+
+type RecommendationCategory = "более сильный профиль" | "базовый / поддерживающий маршрут" | "требуется экспертная проверка";
+
+type SubskillStat = {
+  subskill: string;
+  label: string;
+  accuracyPct: number;
+  answered: number;
+  domain: string;
 };
 
 type Store = {
@@ -421,6 +448,93 @@ function recommendationBucket(text: string): string {
   return "Требуется уточнение специалиста";
 }
 
+function recommendationCategory(session: Session): RecommendationCategory {
+  if (needsExpertReview(session)) return "требуется экспертная проверка";
+  const bucket = recommendationBucket(session.adminOverride?.text || session.recommendation).toLowerCase();
+  if (bucket.includes("расширенный")) return "более сильный профиль";
+  return "базовый / поддерживающий маршрут";
+}
+
+function domainColorByLabel(label: string): string {
+  if (label === "Интеллект") return "#38bdf8";
+  if (label === "Логика") return "#a78bfa";
+  return "#34d399";
+}
+
+function getSubskillStats(session: Session, batteryId?: string): SubskillStat[] {
+  const questionPool = QUESTION_SETS[session.grade].filter((q) => (batteryId ? q.batteryId === batteryId : true));
+  const byQuestion = new Map(questionPool.map((q) => [q.id, q]));
+  const grouped = new Map<string, { correct: number; total: number; domain: string }>();
+
+  for (const answer of session.answers) {
+    const question = byQuestion.get(answer.questionId);
+    if (!question) continue;
+    const domain = batteryLabel(question.batteryId);
+    const key = `${domain}::${question.subskill}`;
+    const entry = grouped.get(key) ?? { correct: 0, total: 0, domain };
+    entry.total += 1;
+    if (answer.isCorrect) entry.correct += 1;
+    grouped.set(key, entry);
+  }
+
+  return [...grouped.entries()]
+    .map(([key, value]) => {
+      const [, subskill] = key.split("::");
+      return {
+        subskill,
+        label: subskillLabel(subskill),
+        accuracyPct: value.total ? Math.round((value.correct / value.total) * 100) : 0,
+        answered: value.total,
+        domain: value.domain,
+      };
+    })
+    .sort((a, b) => b.accuracyPct - a.accuracyPct);
+}
+
+function average(values: number[]): number {
+  if (!values.length) return 0;
+  return values.reduce((acc, value) => acc + value, 0) / values.length;
+}
+
+function pearson(valuesX: number[], valuesY: number[]): number | null {
+  if (valuesX.length !== valuesY.length || valuesX.length < 3) return null;
+  const mx = average(valuesX);
+  const my = average(valuesY);
+  let numerator = 0;
+  let dx = 0;
+  let dy = 0;
+  for (let i = 0; i < valuesX.length; i += 1) {
+    const vx = valuesX[i] - mx;
+    const vy = valuesY[i] - my;
+    numerator += vx * vy;
+    dx += vx * vx;
+    dy += vy * vy;
+  }
+  if (dx === 0 || dy === 0) return null;
+  return numerator / Math.sqrt(dx * dy);
+}
+
+function rank(values: number[]): number[] {
+  const sorted = [...values].map((value, index) => ({ value, index })).sort((a, b) => a.value - b.value);
+  const ranks = new Array(values.length).fill(0);
+  let i = 0;
+  while (i < sorted.length) {
+    let j = i + 1;
+    while (j < sorted.length && sorted[j].value === sorted[i].value) j += 1;
+    const avgRank = (i + j - 1) / 2 + 1;
+    for (let k = i; k < j; k += 1) {
+      ranks[sorted[k].index] = avgRank;
+    }
+    i = j;
+  }
+  return ranks;
+}
+
+function spearman(valuesX: number[], valuesY: number[]): number | null {
+  if (valuesX.length !== valuesY.length || valuesX.length < 3) return null;
+  return pearson(rank(valuesX), rank(valuesY));
+}
+
 function needsExpertReview(session: Session): boolean {
   if (session.status !== "completed") return false;
   const scaled = BATTERIES[session.grade].map((battery) => session.scores.find((score) => score.batteryId === battery.id)?.scaledScore ?? 1);
@@ -674,6 +788,7 @@ export default function Home() {
     [loggedChild, store.sessions],
   );
   const [selectedReportSessionId, setSelectedReportSessionId] = useState<string>("");
+  const [selectedAnalyticsClass, setSelectedAnalyticsClass] = useState<ClassGroup>("4А");
 
   function show(type: "ok" | "error", text: string): void {
     setMessage({ type, text });
@@ -1109,6 +1224,228 @@ export default function Home() {
     [store.children, store.sessions],
   );
 
+  const selectedClassCompletedSessions = useMemo(
+    () => completedSessions.filter((session) => session.campaignId === selectedAnalyticsClass),
+    [completedSessions, selectedAnalyticsClass],
+  );
+
+  const childDomainRadarData = useMemo(() => {
+    if (!selectedReportSession) return [];
+    return BATTERIES[selectedReportSession.grade].map((battery) => {
+      const score = selectedReportSession.scores.find((item) => item.batteryId === battery.id);
+      return {
+        domain: battery.shortTitle,
+        scaled: score?.scaledScore ?? 0,
+      };
+    });
+  }, [selectedReportSession]);
+
+  const childDomainComparisonData = useMemo(() => {
+    if (!selectedReportSession) return [];
+    return BATTERIES[selectedReportSession.grade].map((battery) => {
+      const score = selectedReportSession.scores.find((item) => item.batteryId === battery.id);
+      return {
+        domain: battery.shortTitle,
+        raw: score?.rawScore ?? 0,
+        scaled: (score?.scaledScore ?? 0) * 10,
+        duration: Math.round((score?.durationSec ?? 0) / 6),
+      };
+    });
+  }, [selectedReportSession]);
+
+  const childTimingData = useMemo(() => {
+    if (!selectedReportSession) return [];
+    return BATTERIES[selectedReportSession.grade].map((battery) => {
+      const score = selectedReportSession.scores.find((item) => item.batteryId === battery.id);
+      return {
+        domain: battery.shortTitle,
+        seconds: score?.durationSec ?? 0,
+      };
+    });
+  }, [selectedReportSession]);
+
+  const childSubskillByDomain = useMemo(() => {
+    if (!selectedReportSession) return [];
+    return BATTERIES[selectedReportSession.grade].map((battery) => ({
+      domain: battery.shortTitle,
+      items: getSubskillStats(selectedReportSession, battery.id).sort((a, b) => a.label.localeCompare(b.label, "ru")),
+    }));
+  }, [selectedReportSession]);
+
+  const childProfileSummary = useMemo(() => {
+    if (!selectedReportSession) return null;
+    const domainScores = BATTERIES[selectedReportSession.grade].map((battery) => {
+      const scaled = selectedReportSession.scores.find((item) => item.batteryId === battery.id)?.scaledScore ?? 0;
+      return { domain: battery.shortTitle, scaled };
+    });
+    if (!domainScores.length) return null;
+    const strongest = [...domainScores].sort((a, b) => b.scaled - a.scaled)[0];
+    const weakest = [...domainScores].sort((a, b) => a.scaled - b.scaled)[0];
+    const preserved = [...domainScores].sort((a, b) => b.scaled - a.scaled)[1] ?? strongest;
+    const spread = strongest.scaled - weakest.scaled;
+    return { strongest, weakest, preserved, spread, uneven: spread >= 3 };
+  }, [selectedReportSession]);
+
+  const classDistributionData = useMemo(() => {
+    return BATTERIES[gradeFromClassGroup(selectedAnalyticsClass)].flatMap((battery) =>
+      selectedClassCompletedSessions.map((session) => ({
+        domain: battery.shortTitle,
+        scaled: session.scores.find((item) => item.batteryId === battery.id)?.scaledScore ?? 0,
+      })),
+    );
+  }, [selectedAnalyticsClass, selectedClassCompletedSessions]);
+
+  const classAverageData = useMemo(() => {
+    const grade = gradeFromClassGroup(selectedAnalyticsClass);
+    return BATTERIES[grade].map((battery) => {
+      const values = selectedClassCompletedSessions.map(
+        (session) => session.scores.find((item) => item.batteryId === battery.id)?.scaledScore ?? 0,
+      );
+      return { domain: battery.shortTitle, mean: Number(average(values).toFixed(2)) };
+    });
+  }, [selectedAnalyticsClass, selectedClassCompletedSessions]);
+
+  const classRecommendationData = useMemo(() => {
+    const map = new Map<RecommendationCategory, number>([
+      ["более сильный профиль", 0],
+      ["базовый / поддерживающий маршрут", 0],
+      ["требуется экспертная проверка", 0],
+    ]);
+    selectedClassCompletedSessions.forEach((session) => {
+      const key = recommendationCategory(session);
+      map.set(key, (map.get(key) ?? 0) + 1);
+    });
+    return [...map.entries()].map(([label, count]) => ({ label, count }));
+  }, [selectedClassCompletedSessions]);
+
+  const classCompletionData = useMemo(() => {
+    const classChildren = store.children.filter((child) => child.classGroup === selectedAnalyticsClass);
+    const classSessions = store.sessions.filter((session) => session.campaignId === selectedAnalyticsClass);
+    const completed = classSessions.filter((session) => session.status === "completed").length;
+    const paused = classSessions.filter((session) => session.status === "paused").length;
+    const active = classSessions.filter((session) => session.status === "active").length;
+    const resetReopened = classSessions.filter((session) => session.adminState === "reset" || session.adminState === "reopened").length;
+    return [
+      { label: "Завершено", count: completed },
+      { label: "На паузе", count: paused + active },
+      { label: "Не начато / не завершено", count: Math.max(classChildren.length - completed - paused - active, 0) },
+      { label: "Сброшено/переоткрыто", count: resetReopened },
+    ];
+  }, [selectedAnalyticsClass, store.children, store.sessions]);
+
+  const classSubskillSummaryData = useMemo(() => {
+    const grouped = new Map<string, number[]>();
+    selectedClassCompletedSessions.forEach((session) => {
+      getSubskillStats(session).forEach((item) => {
+        const key = `${item.domain}::${item.label}`;
+        grouped.set(key, [...(grouped.get(key) ?? []), item.accuracyPct]);
+      });
+    });
+    return [...grouped.entries()]
+      .map(([key, values]) => {
+        const [domain, label] = key.split("::");
+        return { domain, label, mean: Number(average(values).toFixed(1)) };
+      })
+      .sort((a, b) => b.mean - a.mean)
+      .slice(0, 12);
+  }, [selectedClassCompletedSessions]);
+
+  const parallelComparisonData = useMemo(() => {
+    const grade = gradeFromClassGroup(selectedAnalyticsClass);
+    const pair: ClassGroup[] = grade === 4 ? ["4А", "4Б"] : ["6А", "6Б"];
+    return BATTERIES[grade].map((battery) => {
+      const item: Record<string, string | number> = { domain: battery.shortTitle };
+      pair.forEach((group) => {
+        const classSessions = completedSessions.filter((session) => session.campaignId === group);
+        const values = classSessions.map((session) => session.scores.find((score) => score.batteryId === battery.id)?.scaledScore ?? 0);
+        item[group] = Number(average(values).toFixed(2));
+      });
+      return item;
+    });
+  }, [completedSessions, selectedAnalyticsClass]);
+
+  const correlationData = useMemo(() => {
+    const rows = completedSessions.map((session) => {
+      const intelligence = session.scores.find((score) => score.batteryId.includes("intelligence"));
+      const logic = session.scores.find((score) => score.batteryId.includes("logic"));
+      const math = session.scores.find((score) => score.batteryId.includes("math_aptitude"));
+      const totalDuration = session.scores.reduce((acc, score) => acc + score.durationSec, 0);
+      const recommendationScore = recommendationCategory(session) === "более сильный профиль" ? 3 : recommendationCategory(session) === "базовый / поддерживающий маршрут" ? 2 : 1;
+      return {
+        intel_scaled: intelligence?.scaledScore ?? 0,
+        logic_scaled: logic?.scaledScore ?? 0,
+        math_scaled: math?.scaledScore ?? 0,
+        intel_duration: intelligence?.durationSec ?? 0,
+        logic_duration: logic?.durationSec ?? 0,
+        math_duration: math?.durationSec ?? 0,
+        total_duration: totalDuration,
+        recommendation_score: recommendationScore,
+      };
+    });
+    const metrics = [
+      { key: "intel_scaled", label: "Интеллект (scaled)" },
+      { key: "logic_scaled", label: "Логика (scaled)" },
+      { key: "math_scaled", label: "Математика (scaled)" },
+      { key: "intel_duration", label: "Время: интеллект" },
+      { key: "logic_duration", label: "Время: логика" },
+      { key: "math_duration", label: "Время: математика" },
+      { key: "total_duration", label: "Общее время" },
+      { key: "recommendation_score", label: "Балльная рекомендация" },
+    ] as const;
+    const matrix: Array<{ x: string; y: string; value: number; method: "Pearson" | "Spearman"; n: number }> = [];
+    for (const x of metrics) {
+      for (const y of metrics) {
+        const xs = rows.map((row) => row[x.key]);
+        const ys = rows.map((row) => row[y.key]);
+        const p = pearson(xs, ys);
+        const s = spearman(xs, ys);
+        const value = p ?? s ?? 0;
+        matrix.push({
+          x: x.label,
+          y: y.label,
+          value: Number(value.toFixed(2)),
+          method: p !== null ? "Pearson" : "Spearman",
+          n: xs.length,
+        });
+      }
+    }
+    const scatter = rows.map((row) => ({
+      intel_logic: { x: row.intel_scaled, y: row.logic_scaled },
+      logic_math: { x: row.logic_scaled, y: row.math_scaled },
+      math_reco: { x: row.math_scaled, y: row.recommendation_score },
+      duration_scaled: { x: row.total_duration, y: average([row.intel_scaled, row.logic_scaled, row.math_scaled]) },
+    }));
+    return { metrics: metrics.map((m) => m.label), matrix, scatter, n: rows.length };
+  }, [completedSessions]);
+
+  const subskillCorrelationData = useMemo(() => {
+    const domainPairs = [
+      ["Интеллект", "Логика"],
+      ["Логика", "Способность к математике"],
+      ["Интеллект", "Способность к математике"],
+    ] as const;
+    return domainPairs.map(([left, right]) => {
+      const leftVals: number[] = [];
+      const rightVals: number[] = [];
+      completedSessions.forEach((session) => {
+        const stats = getSubskillStats(session);
+        const leftDomain = stats.filter((item) => item.domain === left).map((item) => item.accuracyPct);
+        const rightDomain = stats.filter((item) => item.domain === right).map((item) => item.accuracyPct);
+        if (!leftDomain.length || !rightDomain.length) return;
+        leftVals.push(average(leftDomain));
+        rightVals.push(average(rightDomain));
+      });
+      const p = pearson(leftVals, rightVals);
+      const s = spearman(leftVals, rightVals);
+      return {
+        pair: `${left} ↔ ${right}`,
+        value: Number((p ?? s ?? 0).toFixed(2)),
+        method: p !== null ? "Pearson" : "Spearman",
+        n: leftVals.length,
+      };
+    });
+  }, [completedSessions]);
+
   const activeChildSession = loggedChild
     ? childSessions.find((session) => session.campaignId === loggedChild.classGroup && isResumableSession(session))
     : undefined;
@@ -1348,6 +1685,92 @@ export default function Home() {
                             <li>Финальное образовательное решение требует очного профессионального разбора.</li>
                           </ul>
                         </div>
+
+                        <div className="grid gap-3 md:grid-cols-2">
+                          <div className="rounded-md border border-slate-700 bg-slate-950/70 p-3">
+                            <p className="mb-2 text-sm font-semibold">Профиль доменов (radar, scaled)</p>
+                            <div className="h-64">
+                              <ResponsiveContainer width="100%" height="100%">
+                                <RadarChart data={childDomainRadarData}>
+                                  <PolarGrid stroke="#334155" />
+                                  <PolarAngleAxis dataKey="domain" tick={{ fill: "#cbd5e1", fontSize: 12 }} />
+                                  <Tooltip />
+                                  <Radar name="Scaled score" dataKey="scaled" stroke="#38bdf8" fill="#38bdf8" fillOpacity={0.35} />
+                                </RadarChart>
+                              </ResponsiveContainer>
+                            </div>
+                          </div>
+                          <div className="rounded-md border border-slate-700 bg-slate-950/70 p-3">
+                            <p className="mb-2 text-sm font-semibold">Профиль ребёнка (кратко)</p>
+                            {childProfileSummary ? (
+                              <ul className="space-y-2 text-sm text-slate-200">
+                                <li>Сильнейшая зона: <strong>{childProfileSummary.strongest.domain}</strong> ({childProfileSummary.strongest.scaled}/10)</li>
+                                <li>Слабейшая зона: <strong>{childProfileSummary.weakest.domain}</strong> ({childProfileSummary.weakest.scaled}/10)</li>
+                                <li>Относительно сохранная зона: <strong>{childProfileSummary.preserved.domain}</strong></li>
+                                <li className={childProfileSummary.uneven ? "text-amber-300" : "text-emerald-300"}>
+                                  {childProfileSummary.uneven
+                                    ? "Профиль неравномерный: рекомендуется осторожная интерпретация и очный разбор."
+                                    : "Профиль относительно согласованный по доменам."}
+                                </li>
+                              </ul>
+                            ) : (
+                              <p className="text-sm text-slate-400">Недостаточно данных.</p>
+                            )}
+                          </div>
+                        </div>
+
+                        <div className="rounded-md border border-slate-700 bg-slate-950/70 p-3">
+                          <p className="mb-2 text-sm font-semibold">Сравнение доменов: raw / scaled / время (нормировано)</p>
+                          <div className="h-72">
+                            <ResponsiveContainer width="100%" height="100%">
+                              <BarChart data={childDomainComparisonData}>
+                                <CartesianGrid strokeDasharray="3 3" stroke="#334155" />
+                                <XAxis dataKey="domain" tick={{ fill: "#cbd5e1", fontSize: 12 }} />
+                                <YAxis tick={{ fill: "#cbd5e1", fontSize: 12 }} />
+                                <Tooltip />
+                                <Legend />
+                                <Bar dataKey="raw" name="Raw score (%)" fill="#38bdf8" />
+                                <Bar dataKey="scaled" name="Scaled (x10)" fill="#a78bfa" />
+                                <Bar dataKey="duration" name="Время (сек / 6)" fill="#34d399" />
+                              </BarChart>
+                            </ResponsiveContainer>
+                          </div>
+                        </div>
+
+                        <div className="rounded-md border border-slate-700 bg-slate-950/70 p-3">
+                          <p className="mb-2 text-sm font-semibold">Время по доменам</p>
+                          <div className="h-64">
+                            <ResponsiveContainer width="100%" height="100%">
+                              <BarChart data={childTimingData}>
+                                <CartesianGrid strokeDasharray="3 3" stroke="#334155" />
+                                <XAxis dataKey="domain" tick={{ fill: "#cbd5e1", fontSize: 12 }} />
+                                <YAxis tick={{ fill: "#cbd5e1", fontSize: 12 }} />
+                                <Tooltip formatter={(value) => formatDuration(Number(value ?? 0))} />
+                                <Bar dataKey="seconds" name="Длительность (сек)" fill="#f59e0b" />
+                              </BarChart>
+                            </ResponsiveContainer>
+                          </div>
+                        </div>
+
+                        <div className="space-y-3 rounded-md border border-slate-700 bg-slate-950/70 p-3">
+                          <p className="text-sm font-semibold">Субнавыковый профиль по доменам</p>
+                          {childSubskillByDomain.map((domainItem) => (
+                            <div key={`subskill-${domainItem.domain}`} className="rounded-md border border-slate-700 bg-slate-900 p-2">
+                              <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-300">{domainItem.domain}</p>
+                              <div className="h-56">
+                                <ResponsiveContainer width="100%" height="100%">
+                                  <BarChart data={domainItem.items}>
+                                    <CartesianGrid strokeDasharray="3 3" stroke="#334155" />
+                                    <XAxis dataKey="label" tick={{ fill: "#cbd5e1", fontSize: 10 }} angle={-15} interval={0} height={72} />
+                                    <YAxis tick={{ fill: "#cbd5e1", fontSize: 12 }} domain={[0, 100]} />
+                                    <Tooltip />
+                                    <Bar dataKey="accuracyPct" name="Точность субнавыка (%)" fill={domainColorByLabel(domainItem.domain)} />
+                                  </BarChart>
+                                </ResponsiveContainer>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
                       </div>
                     );
                   })()}
@@ -1475,6 +1898,22 @@ export default function Home() {
 
             <article className={`${cardClass} md:col-span-2`}>
               <h2 className="mb-3 text-lg font-semibold text-white">Сводка по классам (4А / 4Б / 6А / 6Б)</h2>
+              <div className="mb-3">
+                <label className="text-sm text-slate-200">
+                  Класс для аналитики
+                  <select
+                    className="ml-2 rounded-md border border-slate-500 bg-slate-800 p-1 text-slate-100"
+                    value={selectedAnalyticsClass}
+                    onChange={(e) => setSelectedAnalyticsClass(e.target.value as ClassGroup)}
+                  >
+                    {CLASS_GROUPS.map((group) => (
+                      <option key={`analytics-${group}`} value={group}>
+                        {group}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              </div>
               <div className="space-y-3 text-sm">
                 {classSummaryRows.map((row) => (
                   <div key={row.classGroup} className="rounded-md border border-slate-700 bg-slate-900 p-3">
@@ -1508,6 +1947,220 @@ export default function Home() {
                     </div>
                   </div>
                 ))}
+              </div>
+              <div className="mt-4 grid gap-3 md:grid-cols-2">
+                <div className="rounded-md border border-slate-700 bg-slate-950/70 p-3">
+                  <p className="mb-2 text-sm font-semibold">Распределение scaled по доменам (выбранный класс)</p>
+                  <div className="h-72">
+                    <ResponsiveContainer width="100%" height="100%">
+                      <ScatterChart>
+                        <CartesianGrid strokeDasharray="3 3" stroke="#334155" />
+                        <XAxis dataKey="domain" type="category" tick={{ fill: "#cbd5e1", fontSize: 11 }} />
+                        <YAxis dataKey="scaled" type="number" domain={[0, 10]} tick={{ fill: "#cbd5e1", fontSize: 12 }} />
+                        <Tooltip cursor={{ strokeDasharray: "3 3" }} />
+                        <Scatter data={classDistributionData} fill="#38bdf8" />
+                      </ScatterChart>
+                    </ResponsiveContainer>
+                  </div>
+                </div>
+                <div className="rounded-md border border-slate-700 bg-slate-950/70 p-3">
+                  <p className="mb-2 text-sm font-semibold">Средние scaled по доменам (выбранный класс)</p>
+                  <div className="h-72">
+                    <ResponsiveContainer width="100%" height="100%">
+                      <BarChart data={classAverageData}>
+                        <CartesianGrid strokeDasharray="3 3" stroke="#334155" />
+                        <XAxis dataKey="domain" tick={{ fill: "#cbd5e1", fontSize: 12 }} />
+                        <YAxis domain={[0, 10]} tick={{ fill: "#cbd5e1", fontSize: 12 }} />
+                        <Tooltip />
+                        <Bar dataKey="mean" name="Средний scaled" fill="#22c55e" />
+                      </BarChart>
+                    </ResponsiveContainer>
+                  </div>
+                </div>
+              </div>
+              <div className="mt-3 grid gap-3 md:grid-cols-2">
+                <div className="rounded-md border border-slate-700 bg-slate-950/70 p-3">
+                  <p className="mb-2 text-sm font-semibold">Распределение маршрутов рекомендаций</p>
+                  <div className="h-72">
+                    <ResponsiveContainer width="100%" height="100%">
+                      <BarChart layout="vertical" data={classRecommendationData}>
+                        <CartesianGrid strokeDasharray="3 3" stroke="#334155" />
+                        <XAxis type="number" tick={{ fill: "#cbd5e1", fontSize: 12 }} />
+                        <YAxis type="category" dataKey="label" width={220} tick={{ fill: "#cbd5e1", fontSize: 11 }} />
+                        <Tooltip />
+                        <Bar dataKey="count" name="Количество детей" fill="#a78bfa" />
+                      </BarChart>
+                    </ResponsiveContainer>
+                  </div>
+                </div>
+                <div className="rounded-md border border-slate-700 bg-slate-950/70 p-3">
+                  <p className="mb-2 text-sm font-semibold">Статус выполнения по классу</p>
+                  <div className="h-72">
+                    <ResponsiveContainer width="100%" height="100%">
+                      <BarChart data={classCompletionData}>
+                        <CartesianGrid strokeDasharray="3 3" stroke="#334155" />
+                        <XAxis dataKey="label" tick={{ fill: "#cbd5e1", fontSize: 11 }} interval={0} angle={-10} height={56} />
+                        <YAxis tick={{ fill: "#cbd5e1", fontSize: 12 }} />
+                        <Tooltip />
+                        <Bar dataKey="count" name="Количество" fill="#f59e0b" />
+                      </BarChart>
+                    </ResponsiveContainer>
+                  </div>
+                </div>
+              </div>
+              <div className="mt-3 grid gap-3 md:grid-cols-2">
+                <div className="rounded-md border border-slate-700 bg-slate-950/70 p-3">
+                  <p className="mb-2 text-sm font-semibold">Субнавыки класса: средняя точность</p>
+                  <div className="h-80">
+                    <ResponsiveContainer width="100%" height="100%">
+                      <BarChart data={classSubskillSummaryData} layout="vertical">
+                        <CartesianGrid strokeDasharray="3 3" stroke="#334155" />
+                        <XAxis type="number" domain={[0, 100]} tick={{ fill: "#cbd5e1", fontSize: 12 }} />
+                        <YAxis type="category" dataKey="label" width={170} tick={{ fill: "#cbd5e1", fontSize: 10 }} />
+                        <Tooltip />
+                        <Bar dataKey="mean" name="Средняя точность (%)" fill="#38bdf8" />
+                      </BarChart>
+                    </ResponsiveContainer>
+                  </div>
+                </div>
+                <div className="rounded-md border border-slate-700 bg-slate-950/70 p-3">
+                  <p className="mb-2 text-sm font-semibold">
+                    Сравнение параллелей: {gradeFromClassGroup(selectedAnalyticsClass) === 4 ? "4А vs 4Б" : "6А vs 6Б"}
+                  </p>
+                  <div className="h-80">
+                    <ResponsiveContainer width="100%" height="100%">
+                      <BarChart data={parallelComparisonData}>
+                        <CartesianGrid strokeDasharray="3 3" stroke="#334155" />
+                        <XAxis dataKey="domain" tick={{ fill: "#cbd5e1", fontSize: 12 }} />
+                        <YAxis domain={[0, 10]} tick={{ fill: "#cbd5e1", fontSize: 12 }} />
+                        <Tooltip />
+                        <Legend />
+                        {gradeFromClassGroup(selectedAnalyticsClass) === 4 ? (
+                          <>
+                            <Bar dataKey="4А" fill="#38bdf8" />
+                            <Bar dataKey="4Б" fill="#a78bfa" />
+                          </>
+                        ) : (
+                          <>
+                            <Bar dataKey="6А" fill="#38bdf8" />
+                            <Bar dataKey="6Б" fill="#a78bfa" />
+                          </>
+                        )}
+                      </BarChart>
+                    </ResponsiveContainer>
+                  </div>
+                </div>
+              </div>
+            </article>
+
+            <article className={`${cardClass} md:col-span-2`}>
+              <h2 className="mb-2 text-lg font-semibold text-white">Исследовательский блок корреляций (только для специалиста)</h2>
+              <p className="text-sm text-amber-200">
+                Корреляции носят ориентировочный характер и не являются доказательством причинно-следственной связи. При малом объёме
+                выборки интерпретация должна быть особенно осторожной.
+              </p>
+              <p className="mt-1 text-xs text-slate-400">
+                Текущая выборка: N={correlationData.n}. Метод: Pearson для интервалоподобных метрик, fallback на Spearman при необходимости.
+              </p>
+              <div className="mt-3 rounded-md border border-slate-700 bg-slate-950/70 p-3">
+                <p className="mb-2 text-sm font-semibold">Матрица корреляций (heatmap)</p>
+                <div className="h-[28rem]">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <ScatterChart>
+                      <CartesianGrid stroke="#1e293b" />
+                      <XAxis dataKey="x" type="category" interval={0} angle={-22} textAnchor="end" height={110} tick={{ fill: "#cbd5e1", fontSize: 10 }} />
+                      <YAxis dataKey="y" type="category" width={150} tick={{ fill: "#cbd5e1", fontSize: 10 }} />
+                      <Tooltip />
+                      <Scatter data={correlationData.matrix}>
+                        {correlationData.matrix.map((item, idx) => (
+                          <Cell
+                            key={`cell-${idx}`}
+                            fill={item.value >= 0 ? `rgba(56,189,248,${Math.min(Math.abs(item.value), 1)})` : `rgba(244,114,182,${Math.min(Math.abs(item.value), 1)})`}
+                          />
+                        ))}
+                      </Scatter>
+                    </ScatterChart>
+                  </ResponsiveContainer>
+                </div>
+              </div>
+              <div className="mt-3 grid gap-3 md:grid-cols-2">
+                <div className="rounded-md border border-slate-700 bg-slate-950/70 p-3">
+                  <p className="mb-2 text-sm font-semibold">Субнавыковые корреляции (агрегированные домены)</p>
+                  <div className="h-72">
+                    <ResponsiveContainer width="100%" height="100%">
+                      <BarChart data={subskillCorrelationData}>
+                        <CartesianGrid strokeDasharray="3 3" stroke="#334155" />
+                        <XAxis dataKey="pair" tick={{ fill: "#cbd5e1", fontSize: 11 }} />
+                        <YAxis domain={[-1, 1]} tick={{ fill: "#cbd5e1", fontSize: 12 }} />
+                        <Tooltip />
+                        <Bar dataKey="value" name="r" fill="#22c55e" />
+                      </BarChart>
+                    </ResponsiveContainer>
+                  </div>
+                  <ul className="mt-2 list-disc pl-5 text-xs text-slate-300">
+                    {subskillCorrelationData.map((item) => (
+                      <li key={`subcorr-${item.pair}`}>{item.pair}: r={item.value}, метод {item.method}, N={item.n}</li>
+                    ))}
+                  </ul>
+                </div>
+                <div className="rounded-md border border-slate-700 bg-slate-950/70 p-3">
+                  <p className="mb-2 text-sm font-semibold">Scatter: Интеллект vs Логика</p>
+                  <div className="h-72">
+                    <ResponsiveContainer width="100%" height="100%">
+                      <ScatterChart>
+                        <CartesianGrid strokeDasharray="3 3" stroke="#334155" />
+                        <XAxis type="number" dataKey="intel_logic.x" name="Интеллект" domain={[0, 10]} tick={{ fill: "#cbd5e1", fontSize: 12 }} />
+                        <YAxis type="number" dataKey="intel_logic.y" name="Логика" domain={[0, 10]} tick={{ fill: "#cbd5e1", fontSize: 12 }} />
+                        <Tooltip />
+                        <Scatter data={correlationData.scatter} fill="#38bdf8" />
+                      </ScatterChart>
+                    </ResponsiveContainer>
+                  </div>
+                </div>
+              </div>
+              <div className="mt-3 grid gap-3 md:grid-cols-3">
+                <div className="rounded-md border border-slate-700 bg-slate-950/70 p-3">
+                  <p className="mb-2 text-xs font-semibold">Логика vs Способность к математике</p>
+                  <div className="h-56">
+                    <ResponsiveContainer width="100%" height="100%">
+                      <ScatterChart>
+                        <CartesianGrid strokeDasharray="3 3" stroke="#334155" />
+                        <XAxis type="number" dataKey="logic_math.x" domain={[0, 10]} tick={{ fill: "#cbd5e1", fontSize: 11 }} />
+                        <YAxis type="number" dataKey="logic_math.y" domain={[0, 10]} tick={{ fill: "#cbd5e1", fontSize: 11 }} />
+                        <Tooltip />
+                        <Scatter data={correlationData.scatter} fill="#a78bfa" />
+                      </ScatterChart>
+                    </ResponsiveContainer>
+                  </div>
+                </div>
+                <div className="rounded-md border border-slate-700 bg-slate-950/70 p-3">
+                  <p className="mb-2 text-xs font-semibold">Математика vs итоговая рекомендация (балльно)</p>
+                  <div className="h-56">
+                    <ResponsiveContainer width="100%" height="100%">
+                      <ScatterChart>
+                        <CartesianGrid strokeDasharray="3 3" stroke="#334155" />
+                        <XAxis type="number" dataKey="math_reco.x" domain={[0, 10]} tick={{ fill: "#cbd5e1", fontSize: 11 }} />
+                        <YAxis type="number" dataKey="math_reco.y" domain={[0, 3]} tick={{ fill: "#cbd5e1", fontSize: 11 }} />
+                        <Tooltip />
+                        <Scatter data={correlationData.scatter} fill="#34d399" />
+                      </ScatterChart>
+                    </ResponsiveContainer>
+                  </div>
+                </div>
+                <div className="rounded-md border border-slate-700 bg-slate-950/70 p-3">
+                  <p className="mb-2 text-xs font-semibold">Общее время vs средний scaled</p>
+                  <div className="h-56">
+                    <ResponsiveContainer width="100%" height="100%">
+                      <ScatterChart>
+                        <CartesianGrid strokeDasharray="3 3" stroke="#334155" />
+                        <XAxis type="number" dataKey="duration_scaled.x" tick={{ fill: "#cbd5e1", fontSize: 11 }} />
+                        <YAxis type="number" dataKey="duration_scaled.y" domain={[0, 10]} tick={{ fill: "#cbd5e1", fontSize: 11 }} />
+                        <Tooltip />
+                        <Scatter data={correlationData.scatter} fill="#f59e0b" />
+                      </ScatterChart>
+                    </ResponsiveContainer>
+                  </div>
+                </div>
               </div>
             </article>
 
