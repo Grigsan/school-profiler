@@ -174,6 +174,10 @@ function sessionKey(session: Pick<Session, "childId" | "campaignId">): string {
   return `${session.childId}::${session.campaignId}`;
 }
 
+function isResumableSession(session: Session): boolean {
+  return session.status === "active" || session.status === "paused";
+}
+
 function clamp(value: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, value));
 }
@@ -756,7 +760,7 @@ export default function Home() {
       (session) =>
         session.childId === child.id &&
         session.campaignId === campaignId &&
-        session.status !== "completed" &&
+        isResumableSession(session) &&
         session.grade === child.grade,
     );
 
@@ -798,9 +802,7 @@ export default function Home() {
   }
 
   function answerQuestion(sessionId: string, selectedIndex: number): void {
-    const currentSession = store.sessions.find(
-      (session) => session.id === sessionId && session.status !== "completed",
-    );
+    const currentSession = store.sessions.find((session) => session.id === sessionId && isResumableSession(session));
     if (!currentSession) return;
 
     const currentQuestion = QUESTION_SETS[currentSession.grade][currentSession.currentQuestionIndex];
@@ -821,7 +823,7 @@ export default function Home() {
     setStore((prev) => ({
       ...prev,
       sessions: prev.sessions.map((session) => {
-        if (session.id !== sessionId || session.status === "completed") return session;
+        if (session.id !== sessionId || !isResumableSession(session)) return session;
 
         const questions = QUESTION_SETS[session.grade];
         const question = questions[session.currentQuestionIndex];
@@ -839,8 +841,8 @@ export default function Home() {
         const nextAnswers = [...session.answers, newAnswer];
         const nextScores = computeScoresFromAnswers(session.grade, nextAnswers, session.startedAt);
 
-        // If a paused session is shown as resumable in the child UI, the same click must
-        // both resume it and persist the selected answer to avoid status-mismatch no-ops.
+        // Paused sessions are resumable in the child UI, so answer clicks must both
+        // reactivate the session and persist the selected answer in the same update.
         return {
           ...session,
           status: "active",
@@ -1028,7 +1030,7 @@ export default function Home() {
   });
 
   const activeChildSession = loggedChild
-    ? childSessions.find((session) => session.campaignId === loggedChild.classGroup && session.status !== "completed")
+    ? childSessions.find((session) => session.campaignId === loggedChild.classGroup && isResumableSession(session))
     : undefined;
   const completedChildSession = loggedChild
     ? childSessions.find((session) => session.campaignId === loggedChild.classGroup && session.status === "completed")
