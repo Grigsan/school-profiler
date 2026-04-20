@@ -2145,7 +2145,13 @@ export default function Home() {
     if (pendingReviewCount > 0) cycleStatusLines.push("Не все решения приняты");
     if (completedImportedSessions.length > 0 && !hasBackup) cycleStatusLines.push("Рекомендуется сохранить резервную копию");
     if (!importedChildren.length || !activeCodes.length) cycleStatusLines.push("Рабочий цикл не завершён");
-    if (!cycleStatusLines.length) cycleStatusLines.push("Текущий цикл можно считать завершённым.");
+    const cycleCompleted = cycleStatusLines.length === 0;
+    if (cycleCompleted) {
+      cycleStatusLines.push("Текущий цикл можно считать завершённым.");
+      statusMessages.push("Текущий цикл можно считать завершённым.");
+    } else if (!statusMessages.length) {
+      statusMessages.push("Рабочий цикл не завершён: проверьте этапы подготовки.");
+    }
 
     return {
       registryLoaded: importedChildren.length > 0,
@@ -2160,6 +2166,7 @@ export default function Home() {
       pendingReviewCount,
       finalizedCount,
       hasBackup,
+      cycleCompleted,
       criticalSteps,
       statusMessages,
       cycleStatusLines,
@@ -2809,27 +2816,11 @@ export default function Home() {
             </article>
 
             <article className={`${cardClass} md:col-span-2`}>
-              <h2 className="mb-3 text-lg font-semibold text-white">Контрольный прогон рабочего цикла</h2>
-              <ol className="list-decimal space-y-2 pl-5 text-sm text-slate-200">
-                <li>Загрузить реестр класса.</li>
-                <li>Проверить состав классов 4А / 4Б / 6А / 6Б.</li>
-                <li>Сгенерировать коды.</li>
-                <li>Сохранить резервную копию.</li>
-                <li>Провести тестирование.</li>
-                <li>Проверить незавершённые попытки.</li>
-                <li>Просмотреть результаты.</li>
-                <li>Принять финальные решения.</li>
-                <li>Выгрузить итоговые таблицы.</li>
-                <li>Сохранить резервную копию после завершения цикла.</li>
-              </ol>
-            </article>
-
-            <article className={`${cardClass} md:col-span-2`}>
               <h2 className="mb-3 text-lg font-semibold text-white">Как работать с системой</h2>
               <div className="grid gap-3 text-sm text-slate-200 md:grid-cols-2">
                 <p className="rounded-md border border-slate-700 bg-slate-900 p-3">
                   <strong className="block text-white">Как начать новый цикл</strong>
-                  Откройте режим администратора, проверьте актуальность данных и очистите рабочий контекст только при необходимости нового набора.
+                  Откройте режим администратора, проверьте готовность по классам 4А / 4Б / 6А / 6Б и начинайте цикл только после резервной копии.
                 </p>
                 <p className="rounded-md border border-slate-700 bg-slate-900 p-3">
                   <strong className="block text-white">Как импортировать реестр</strong>
@@ -2838,10 +2829,6 @@ export default function Home() {
                 <p className="rounded-md border border-slate-700 bg-slate-900 p-3">
                   <strong className="block text-white">Как сгенерировать коды</strong>
                   Сгенерируйте коды для выбранного класса, выгрузите список и передайте коды детям индивидуально.
-                </p>
-                <p className="rounded-md border border-slate-700 bg-slate-900 p-3">
-                  <strong className="block text-white">Как дети входят</strong>
-                  На детском экране ребёнок вводит свой код, после чего проходит батареи без повторного входа.
                 </p>
                 <p className="rounded-md border border-slate-700 bg-slate-900 p-3">
                   <strong className="block text-white">Как отслеживать прохождение</strong>
@@ -2893,6 +2880,9 @@ export default function Home() {
                   Резервная копия: <strong>{cycleReadiness.hasBackup ? "сохранена" : "не сохранена"}</strong>
                 </p>
                 <p className="rounded-md border border-slate-700 bg-slate-950 p-3">
+                  Цикл завершён: <strong>{cycleReadiness.cycleCompleted ? "да" : "нет"}</strong>
+                </p>
+                <p className="rounded-md border border-slate-700 bg-slate-950 p-3">
                   Критические незавершённые шаги: <strong>{cycleReadiness.criticalSteps.length}</strong>
                 </p>
                 <p className="rounded-md border border-slate-700 bg-slate-950 p-3">
@@ -2907,14 +2897,6 @@ export default function Home() {
                     <li key={`cycle-status-${index}`}>{line}</li>
                   ))}
                 </ul>
-              </div>
-
-              <div className="mt-3 grid gap-2 text-xs text-slate-200">
-                {cycleReadiness.childrenByClass.map((item) => (
-                  <p key={`cycle-child-count-${item.classGroup}`} className="rounded-md border border-slate-700 bg-slate-900 p-2">
-                    <strong>{item.classGroup}</strong>: учеников {item.importedStudents}
-                  </p>
-                ))}
               </div>
 
               <div className="mt-4 rounded-md border border-indigo-700/70 bg-indigo-950/25 p-3">
@@ -2936,16 +2918,20 @@ export default function Home() {
                 </div>
               </div>
 
-              {cycleReadiness.statusMessages.length > 0 && (
-                <div className="mt-4 rounded-md border border-amber-600/60 bg-amber-950/20 p-3 text-sm text-amber-100">
-                  <p className="mb-2 font-semibold">Предупреждения по рабочему циклу</p>
-                  <ul className="list-disc space-y-1 pl-5">
-                    {cycleReadiness.statusMessages.map((warning, index) => (
-                      <li key={`cycle-warning-${index}`}>{warning}</li>
-                    ))}
-                  </ul>
-                </div>
-              )}
+              <div
+                className={`mt-4 rounded-md border p-3 text-sm ${
+                  cycleReadiness.cycleCompleted
+                    ? "border-emerald-600/60 bg-emerald-950/20 text-emerald-100"
+                    : "border-amber-600/60 bg-amber-950/20 text-amber-100"
+                }`}
+              >
+                <p className="mb-2 font-semibold">Предупреждения по рабочему циклу</p>
+                <ul className="list-disc space-y-1 pl-5">
+                  {cycleReadiness.statusMessages.map((warning, index) => (
+                    <li key={`cycle-warning-${index}`}>{warning}</li>
+                  ))}
+                </ul>
+              </div>
             </article>
 
             <article className={cardClass}>
