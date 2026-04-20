@@ -364,9 +364,17 @@ function computeRecommendation(grade: Grade, scores: SessionScore[]): string {
       : `Зона наибольших трудностей: ${batteryLabel(weakestDomain.batteryId).toLowerCase()}.`;
 
   const cautionNote = "Результат носит предварительный и консультативный характер.";
+  const hasHighAverage = avg >= 8;
+  const hasBalancedMinimum = min >= 6;
+  const hasControlledSpread = spread <= 2;
+  const canUseStrongestRecommendation = hasHighAverage && hasBalancedMinimum && hasControlledSpread;
 
-  if (avg >= 8) {
-    return `Предварительная рекомендация: маршрут с углублёнными задачами и контролем темпа. Основание: средний доменный балл ${avg.toFixed(1)}/10, разброс результатов ${spread} балл(а). ${strongestNote} ${weakestNote} ${cautionNote}`;
+  if (canUseStrongestRecommendation) {
+    return `Предварительная рекомендация: расширенный профиль с углублёнными задачами и контролем темпа. Основание: средний доменный балл ${avg.toFixed(1)}/10, минимальный доменный показатель ${min}/10, разброс результатов ${spread} балл(а). Профиль демонстрирует устойчиво сильные и согласованные результаты между доменами. ${strongestNote} ${weakestNote} ${cautionNote}`;
+  }
+
+  if (hasHighAverage) {
+    return `Предварительная рекомендация: базовый маршрут с адресной поддержкой и последующим расширением нагрузки по мере выравнивания профиля. Основание: средний доменный балл ${avg.toFixed(1)}/10, минимальный доменный показатель ${min}/10, разброс результатов ${spread} балл(а). Профиль в целом сильный, однако наблюдается неравномерность результатов между доменами. Требуется дополнительный профессиональный анализ слабейшего домена перед принятием решения. ${strongestNote} ${weakestNote} ${cautionNote}`;
   }
 
   if (avg >= 5) {
