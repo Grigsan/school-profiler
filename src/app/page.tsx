@@ -2094,7 +2094,7 @@ export default function Home() {
     const completedImportedSessions = importedSessions.filter((session) => session.status === "completed");
     const pausedImportedSessions = importedSessions.filter((session) => session.status === "paused");
     const issuedCodes = store.accessCodes.filter((code) => importedChildrenById.has(code.childId));
-    const activeCodes = issuedCodes.filter((code) => code.status !== "Недействителен");
+    const activeCodes = issuedCodes.filter((code) => accessCodeStatus(code, store.sessions) !== "Недействителен");
     const childrenWithSession = new Set(importedSessions.map((session) => session.childId));
     const notStartedCount = importedChildren.filter((child) => !childrenWithSession.has(child.id)).length;
     const pendingReviewCount = completedImportedSessions.filter((session) => session.reviewStatus !== "решение принято").length;
@@ -2104,7 +2104,9 @@ export default function Home() {
     const classRows = CLASS_GROUPS.map((group) => {
       const classChildren = importedChildren.filter((child) => child.classGroup === group);
       const classChildIds = new Set(classChildren.map((child) => child.id));
-      const classCodes = store.accessCodes.filter((code) => classChildIds.has(code.childId) && code.status !== "Недействителен");
+      const classCodes = store.accessCodes.filter(
+        (code) => classChildIds.has(code.childId) && accessCodeStatus(code, store.sessions) !== "Недействителен",
+      );
       const classSessions = importedSessions.filter((session) => session.campaignId === group);
       const classCompleted = classSessions.filter((session) => session.status === "completed");
       const classPaused = classSessions.filter((session) => session.status === "paused");
@@ -2135,7 +2137,7 @@ export default function Home() {
     if (!activeCodes.length) criticalSteps.push("Нет активных кодов доступа.");
     if (pausedImportedSessions.length > 0) criticalSteps.push("Остались незавершённые попытки.");
     if (pendingReviewCount > 0) criticalSteps.push("Не все решения приняты.");
-    if (pendingReviewCount > 0) statusMessages.push("Есть результаты без финального решения специалиста.");
+    if (pendingReviewCount > 0) statusMessages.push("Есть результаты без финального решения.");
     if (completedImportedSessions.length > 0 && !hasBackup) statusMessages.push("Рекомендуется сохранить резервную копию.");
 
     const cycleStatusLines: string[] = [];
@@ -2143,7 +2145,7 @@ export default function Home() {
     if (pendingReviewCount > 0) cycleStatusLines.push("Не все решения приняты");
     if (completedImportedSessions.length > 0 && !hasBackup) cycleStatusLines.push("Рекомендуется сохранить резервную копию");
     if (!importedChildren.length || !activeCodes.length) cycleStatusLines.push("Рабочий цикл не завершён");
-    if (!cycleStatusLines.length) cycleStatusLines.push("Цикл можно считать завершённым");
+    if (!cycleStatusLines.length) cycleStatusLines.push("Текущий цикл можно считать завершённым.");
 
     return {
       registryLoaded: importedChildren.length > 0,
@@ -2834,7 +2836,7 @@ export default function Home() {
                   Загрузите CSV-реестр, проверьте предпросмотр, исправьте ошибки строк и подтвердите импорт.
                 </p>
                 <p className="rounded-md border border-slate-700 bg-slate-900 p-3">
-                  <strong className="block text-white">Как выдать коды</strong>
+                  <strong className="block text-white">Как сгенерировать коды</strong>
                   Сгенерируйте коды для выбранного класса, выгрузите список и передайте коды детям индивидуально.
                 </p>
                 <p className="rounded-md border border-slate-700 bg-slate-900 p-3">
@@ -2854,8 +2856,8 @@ export default function Home() {
                   В рабочем пространстве по классам выберите итоговое решение, статус рассмотрения и комментарий специалиста.
                 </p>
                 <p className="rounded-md border border-slate-700 bg-slate-900 p-3">
-                  <strong className="block text-white">Как делать backup / restore</strong>
-                  Регулярно сохраняйте резервную копию до и после цикла; при необходимости восстановите данные из файла через блок backup/restore.
+                  <strong className="block text-white">Как делать резервную копию и восстановление</strong>
+                  Регулярно сохраняйте резервную копию до и после цикла; при необходимости восстановите данные из файла через блок резервного копирования.
                 </p>
               </div>
             </article>
