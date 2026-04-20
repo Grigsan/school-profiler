@@ -796,7 +796,9 @@ export default function Home() {
   }
 
   function answerQuestion(sessionId: string, selectedIndex: number): void {
-    const currentSession = store.sessions.find((session) => session.id === sessionId && session.status === "active");
+    const currentSession = store.sessions.find(
+      (session) => session.id === sessionId && session.status !== "completed",
+    );
     if (!currentSession) return;
 
     const currentQuestion = QUESTION_SETS[currentSession.grade][currentSession.currentQuestionIndex];
@@ -835,8 +837,12 @@ export default function Home() {
         const nextAnswers = [...session.answers, newAnswer];
         const nextScores = computeScoresFromAnswers(session.grade, nextAnswers, session.startedAt);
 
+        // If a paused session is shown as resumable in the child UI, the same click must
+        // both resume it and persist the selected answer to avoid status-mismatch no-ops.
         return {
           ...session,
+          status: "active",
+          pausedAt: undefined,
           answers: nextAnswers,
           currentQuestionIndex: clamp(session.currentQuestionIndex + 1, 0, questions.length),
           scores: nextScores,
