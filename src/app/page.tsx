@@ -262,6 +262,8 @@ type RegistryImportPreview = {
   };
 };
 
+type RegistryImportMode = "append" | "replace_class" | "reset_all";
+
 type BatteryDefinition = {
   id: string;
   blockTitle: string;
@@ -1244,6 +1246,7 @@ export default function Home() {
   const [adminUnlocked, setAdminUnlocked] = useState(false);
   const [demoPinVisible, setDemoPinVisible] = useState(false);
   const [selectedRegistryClass, setSelectedRegistryClass] = useState<ClassGroup>("4А");
+  const [registryImportMode, setRegistryImportMode] = useState<RegistryImportMode>("replace_class");
   const [registryImportPreview, setRegistryImportPreview] = useState<RegistryImportPreview | null>(null);
   const [isImportingRegistry, setIsImportingRegistry] = useState(false);
   const [backupImportPreview, setBackupImportPreview] = useState<BackupImportPreview | null>(null);
@@ -1443,7 +1446,7 @@ export default function Home() {
     show("ok", "Режим администратора открыт.");
   }
 
-  function parseRegistryCsvContent(fileName: string, content: string): RegistryImportPreview {
+  function parseRegistryCsvContent(fileName: string, content: string, mode: RegistryImportMode, targetClass: ClassGroup): RegistryImportPreview {
     const lines = content.replaceAll("\r\n", "\n").replaceAll("\r", "\n").split("\n").filter((line) => line.trim().length > 0);
     if (!lines.length) {
       return {
@@ -1485,8 +1488,12 @@ export default function Home() {
     const duplicates: DuplicateRegistryRow[] = [];
     const validRows: ParsedRegistryRow[] = [];
     const invalidRows: InvalidRegistryRow[] = [];
-    const existingStudentIds = new Set(store.children.map((child) => child.registryId.trim().toUpperCase()));
-    const existingAccessCodes = new Set(store.accessCodes.map((record) => normalizeAccessCode(record.code)));
+    const existingChildren =
+      mode === "reset_all" ? [] : mode === "replace_class" ? store.children.filter((child) => child.classGroup !== targetClass) : store.children;
+    const existingCodes =
+      mode === "reset_all" ? [] : mode === "replace_class" ? store.accessCodes.filter((code) => code.classGroup !== targetClass) : store.accessCodes;
+    const existingStudentIds = new Set(existingChildren.map((child) => child.registryId.trim().toUpperCase()));
+    const existingAccessCodes = new Set(existingCodes.map((record) => normalizeAccessCode(record.code)));
 
     for (let i = 1; i < lines.length; i += 1) {
       const cells = splitDelimitedLine(lines[i], delimiter);
@@ -1566,7 +1573,7 @@ export default function Home() {
     const reader = new FileReader();
     reader.onload = () => {
       const content = typeof reader.result === "string" ? reader.result : "";
-      const preview = parseRegistryCsvContent(file.name, content);
+      const preview = parseRegistryCsvContent(file.name, content, registryImportMode, selectedRegistryClass);
       setRegistryImportPreview(preview);
       setIsImportingRegistry(false);
       show("ok", `Файл ${file.name} загружен в предпросмотр.`);
@@ -1588,8 +1595,25 @@ export default function Home() {
       return;
     }
 
+    if (registryImportMode === "replace_class") {
+      const hasForeignClassRows = registryImportPreview.validRows.some((row) => row.classGroup !== selectedRegistryClass);
+      if (hasForeignClassRows) {
+        show("error", `В режиме замены класса файл должен содержать только строки класса ${selectedRegistryClass}.`);
+        return;
+      }
+    }
+
+    const rowsToImport = registryImportMode === "replace_class"
+      ? registryImportPreview.validRows.filter((row) => row.classGroup === selectedRegistryClass)
+      : registryImportPreview.validRows;
+
+    if (!rowsToImport.length) {
+      show("error", "Новых корректных строк для импорта нет.");
+      return;
+    }
+
     const nowIso = new Date().toISOString();
-    const newChildren = registryImportPreview.validRows.map((row) => ({
+    const newChildren = rowsToImport.map((row) => ({
       id: uid("ch"),
       registryId: row.studentId,
       grade: gradeFromClassGroup(row.classGroup),
@@ -1601,7 +1625,7 @@ export default function Home() {
     }));
     const newAccessCodes: AccessCodeRecord[] = newChildren.map((child, index) => ({
       id: uid("ac"),
-      code: registryImportPreview.validRows[index].accessCode,
+      code: rowsToImport[index].accessCode,
       childId: child.id,
       registryId: child.registryId,
       grade: child.grade,
@@ -1611,13 +1635,34 @@ export default function Home() {
       updatedAt: nowIso,
     }));
 
-    setStore((prev) => ({
-      ...prev,
-      campaigns: FIXED_CAMPAIGNS,
-      children: [...newChildren, ...prev.children],
-      accessCodes: [...newAccessCodes, ...prev.accessCodes],
-    }));
-    show("ok", `Импорт завершён: ${newChildren.length} учеников и ${newAccessCodes.length} кодов добавлено.`);
+    setStore((prev) => {
+      const nextBase =
+        registryImportMode === "reset_all"
+          ? { children: [], accessCodes: [], sessions: [] }
+          : registryImportMode === "replace_class"
+            ? {
+                children: prev.children.filter((child) => child.classGroup !== selectedRegistryClass),
+                accessCodes: prev.accessCodes.filter((code) => code.classGroup !== selectedRegistryClass),
+                sessions: prev.sessions.filter((session) => session.campaignId !== selectedRegistryClass),
+              }
+            : { children: prev.children, accessCodes: prev.accessCodes, sessions: prev.sessions };
+
+      return {
+        ...prev,
+        campaigns: FIXED_CAMPAIGNS,
+        children: [...newChildren, ...nextBase.children],
+        accessCodes: [...newAccessCodes, ...nextBase.accessCodes],
+        sessions: nextBase.sessions,
+      };
+    });
+
+    const actionLabel =
+      registryImportMode === "reset_all"
+        ? "Реестр полностью очищен и загружен заново"
+        : registryImportMode === "replace_class"
+          ? `Реестр класса ${selectedRegistryClass} заменён`
+          : "Строки добавлены в текущий реестр";
+    show("ok", `${actionLabel}: ${newChildren.length} учеников и ${newAccessCodes.length} кодов.`);
     setRegistryImportPreview(null);
   }
 
@@ -1978,7 +2023,7 @@ export default function Home() {
   const registryClassStats = useMemo(
     () =>
       CLASS_GROUPS.map((group) => {
-        const classChildren = store.children.filter((child) => child.classGroup === group && !child.registryId.startsWith("ANON-"));
+        const classChildren = store.children.filter((child) => child.classGroup === group);
         return {
           classGroup: group,
           totalImported: classChildren.length,
@@ -1991,7 +2036,7 @@ export default function Home() {
   const classCodeRows = useMemo(() => {
     const childById = new Map(store.children.map((child) => [child.id, child]));
     return store.accessCodes
-      .filter((record) => record.classGroup === selectedRegistryClass && !record.registryId.startsWith("ANON-"))
+      .filter((record) => record.classGroup === selectedRegistryClass)
       .map((record) => {
         const child = childById.get(record.childId);
         const status = accessCodeStatus(record, store.sessions);
@@ -2001,7 +2046,7 @@ export default function Home() {
   }, [hasChildUsedCode, selectedRegistryClass, store.accessCodes, store.children, store.sessions]);
 
   const cycleReadiness = useMemo(() => {
-    const importedChildren = store.children.filter((child) => !child.registryId.startsWith("ANON-"));
+    const importedChildren = store.children;
     const importedChildrenById = new Set(importedChildren.map((child) => child.id));
     const importedSessions = store.sessions.filter((session) => importedChildrenById.has(session.childId));
     const completedImportedSessions = importedSessions.filter((session) => session.status === "completed");
@@ -2040,7 +2085,7 @@ export default function Home() {
     const criticalSteps: string[] = [];
     classRows.forEach((row) => {
       if (row.importedStudents > 0 && row.activeCodes === 0) {
-        statusMessages.push(`Для класса ${row.classGroup} отсутствуют активные импортированные коды доступа.`);
+        statusMessages.push(`Для класса ${row.classGroup} отсутствуют активные коды доступа из реестра.`);
       }
       if (row.pausedSessions > 0) {
         statusMessages.push(`Для класса ${row.classGroup} есть незавершённые попытки.`);
@@ -2745,7 +2790,7 @@ export default function Home() {
                 </p>
                 <p className="rounded-md border border-slate-700 bg-slate-900 p-3">
                   <strong className="block text-white">После импорта дети входят по заранее назначенному коду</strong>
-                  Вход ребёнка выполняется только по access_code из импортированного реестра.
+                  Вход ребёнка выполняется только по access_code из загруженного реестра.
                 </p>
                 <p className="rounded-md border border-slate-700 bg-slate-900 p-3">
                   <strong className="block text-white">Как отслеживать прохождение</strong>
@@ -2823,7 +2868,7 @@ export default function Home() {
                     <div key={`readiness-${item.classGroup}`} className="rounded-md border border-slate-700 bg-slate-900 p-3 text-sm text-slate-200">
                       <p className="mb-2 font-semibold text-white">{item.classGroup}</p>
                       <ul className="space-y-1 text-xs text-slate-300">
-                        <li>Импортировано учеников: {item.importedStudents}</li>
+                        <li>Учеников в реестре: {item.importedStudents}</li>
                         <li>Активных кодов: {item.activeCodes}</li>
                         <li>Завершённых сессий: {item.completedSessions}</li>
                         <li>На паузе: {item.pausedSessions}</li>
@@ -2862,6 +2907,38 @@ export default function Home() {
                 <p>Коды доступа задаются администратором вручную вне системы.</p>
                 <p>После импорта дети входят по заранее назначенному коду.</p>
               </div>
+              <div className="mb-3 rounded-md border border-slate-700 bg-slate-900 p-3 text-xs text-slate-100">
+                <p className="mb-2 font-semibold">Режим импорта реестра</p>
+                <div className="grid gap-2 md:grid-cols-3">
+                  <label className="rounded-md border border-slate-700 p-2">
+                    <input
+                      type="radio"
+                      name="registryImportMode"
+                      checked={registryImportMode === "replace_class"}
+                      onChange={() => setRegistryImportMode("replace_class")}
+                    />{" "}
+                    Заменить реестр выбранного класса
+                  </label>
+                  <label className="rounded-md border border-slate-700 p-2">
+                    <input
+                      type="radio"
+                      name="registryImportMode"
+                      checked={registryImportMode === "append"}
+                      onChange={() => setRegistryImportMode("append")}
+                    />{" "}
+                    Добавить новые строки в реестр
+                  </label>
+                  <label className="rounded-md border border-slate-700 p-2">
+                    <input
+                      type="radio"
+                      name="registryImportMode"
+                      checked={registryImportMode === "reset_all"}
+                      onChange={() => setRegistryImportMode("reset_all")}
+                    />{" "}
+                    Очистить текущий реестр и импортировать заново
+                  </label>
+                </div>
+              </div>
               <div className="mb-3 flex flex-wrap items-center gap-2">
                 <input
                   accept=".csv,.txt,.xlsx,.xls"
@@ -2884,13 +2961,21 @@ export default function Home() {
                     {registryImportPreview.summary.invalidRows} · дубликатов: {registryImportPreview.summary.duplicateRows}
                   </p>
                   <div className="flex flex-wrap gap-2">
-                    <button className={buttonPrimaryClass} onClick={confirmRegistryImport} type="button">
+                    <button
+                      className={buttonPrimaryClass}
+                      onClick={confirmRegistryImport}
+                      type="button"
+                      disabled={registryImportPreview.summary.validRows === 0}
+                    >
                       Подтвердить импорт корректных строк
                     </button>
                     <button className={buttonSecondaryClass} onClick={() => setRegistryImportPreview(null)} type="button">
                       Очистить предпросмотр
                     </button>
                   </div>
+                  {registryImportPreview.summary.validRows === 0 && (
+                    <p className="text-sm text-amber-200">Новых корректных строк для импорта нет.</p>
+                  )}
                   {registryImportPreview.invalidRows.length > 0 && (
                     <div className="max-h-32 overflow-auto rounded-md border border-rose-800">
                       <p className="p-2 text-xs text-rose-200">Некорректные строки</p>
@@ -2967,7 +3052,7 @@ export default function Home() {
                     {!classCodeRows.length && (
                       <tr>
                         <td className="p-2 text-slate-400" colSpan={5}>
-                          Для выбранного класса пока нет импортированных кодов.
+                          Для выбранного класса пока нет кодов доступа из загруженного реестра.
                         </td>
                       </tr>
                     )}
