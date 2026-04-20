@@ -1214,6 +1214,33 @@ function accessCodeStatus(codeRecord: AccessCodeRecord, sessions: Session[]): Ac
   return "Использован";
 }
 
+function isCodeUsableInCurrentCycle(status: AccessCodeStatus): boolean {
+  return status !== "Недействителен" && status !== "Завершён";
+}
+
+function getCurrentCycleBaselineAt(children: Child[], accessCodes: AccessCodeRecord[], sessions: Session[]): string | null {
+  const timestamps: string[] = [];
+
+  children.forEach((child) => timestamps.push(child.createdAt));
+  accessCodes.forEach((code) => {
+    timestamps.push(code.createdAt);
+    timestamps.push(code.updatedAt);
+  });
+  sessions.forEach((session) => {
+    timestamps.push(session.startedAt);
+    if (session.completedAt) timestamps.push(session.completedAt);
+    if (session.pausedAt) timestamps.push(session.pausedAt);
+    if (session.adminOverride?.at) timestamps.push(session.adminOverride.at);
+  });
+
+  const valid = timestamps
+    .map((value) => ({ value, ts: toTimestamp(value) }))
+    .filter((item) => item.ts > 0)
+    .sort((a, b) => b.ts - a.ts);
+
+  return valid[0]?.value ?? null;
+}
+
 function isSessionComplete(session: Session): boolean {
   const gradeQuestions = QUESTION_SETS[session.grade];
   const allAnswered = session.answers.length >= gradeQuestions.length;
@@ -2055,19 +2082,25 @@ export default function Home() {
     const completedImportedSessions = importedSessions.filter((session) => session.status === "completed");
     const pausedImportedSessions = importedSessions.filter((session) => session.status === "paused");
     const issuedCodes = store.accessCodes.filter((code) => importedChildrenById.has(code.childId));
-    const activeCodes = issuedCodes.filter((code) => accessCodeStatus(code, store.sessions) !== "Недействителен");
+    const issuedCodeStatuses = issuedCodes.map((code) => accessCodeStatus(code, store.sessions));
+    const activeCodesCount = issuedCodeStatuses.filter((status) => isCodeUsableInCurrentCycle(status)).length;
     const childrenWithSession = new Set(importedSessions.map((session) => session.childId));
     const notStartedCount = importedChildren.filter((child) => !childrenWithSession.has(child.id)).length;
     const pendingReviewCount = completedImportedSessions.filter((session) => session.reviewStatus !== "решение принято").length;
     const finalizedCount = completedImportedSessions.filter((session) => session.reviewStatus === "решение принято").length;
-    const hasBackup = Boolean(lastBackupAt);
+    const cycleBaselineAt = getCurrentCycleBaselineAt(importedChildren, issuedCodes, importedSessions);
+    const hasBackup =
+      Boolean(lastBackupAt) &&
+      Boolean(cycleBaselineAt) &&
+      toTimestamp(lastBackupAt ?? "") >= toTimestamp(cycleBaselineAt ?? "");
 
     const classRows = CLASS_GROUPS.map((group) => {
       const classChildren = importedChildren.filter((child) => child.classGroup === group);
       const classChildIds = new Set(classChildren.map((child) => child.id));
-      const classCodes = store.accessCodes.filter(
-        (code) => classChildIds.has(code.childId) && accessCodeStatus(code, store.sessions) !== "Недействителен",
-      );
+      const classCodes = store.accessCodes
+        .filter((code) => classChildIds.has(code.childId))
+        .map((code) => accessCodeStatus(code, store.sessions))
+        .filter((status) => isCodeUsableInCurrentCycle(status));
       const classSessions = importedSessions.filter((session) => session.campaignId === group);
       const classCompleted = classSessions.filter((session) => session.status === "completed");
       const classPaused = classSessions.filter((session) => session.status === "paused");
@@ -2095,17 +2128,21 @@ export default function Home() {
       }
     });
     if (!importedChildren.length) criticalSteps.push("Реестр класса не загружен.");
-    if (!activeCodes.length) criticalSteps.push("Нет активных кодов доступа.");
+    if (activeCodesCount === 0) criticalSteps.push("Нет активных кодов доступа.");
+    if (completedImportedSessions.length === 0) criticalSteps.push("Нет завершённых попыток тестирования.");
+    if (notStartedCount > 0) criticalSteps.push("Есть ученики, которые ещё не начинали тестирование.");
     if (pausedImportedSessions.length > 0) criticalSteps.push("Остались незавершённые попытки.");
     if (pendingReviewCount > 0) criticalSteps.push("Не все решения приняты.");
     if (pendingReviewCount > 0) statusMessages.push("Есть результаты без финального решения.");
     if (completedImportedSessions.length > 0 && !hasBackup) statusMessages.push("Рекомендуется сохранить резервную копию.");
 
     const cycleStatusLines: string[] = [];
+    if (completedImportedSessions.length === 0) cycleStatusLines.push("Тестирование ещё не завершалось");
+    if (notStartedCount > 0) cycleStatusLines.push("Есть ученики, которые ещё не начинали тестирование");
     if (pausedImportedSessions.length > 0) cycleStatusLines.push("Остались незавершённые попытки");
     if (pendingReviewCount > 0) cycleStatusLines.push("Не все решения приняты");
     if (completedImportedSessions.length > 0 && !hasBackup) cycleStatusLines.push("Рекомендуется сохранить резервную копию");
-    if (!importedChildren.length || !activeCodes.length) cycleStatusLines.push("Рабочий цикл не завершён");
+    if (!importedChildren.length || activeCodesCount === 0) cycleStatusLines.push("Рабочий цикл не завершён");
     const cycleCompleted = cycleStatusLines.length === 0;
     if (cycleCompleted) {
       cycleStatusLines.push("Текущий цикл можно считать завершённым.");
@@ -2118,9 +2155,9 @@ export default function Home() {
       registryLoaded: importedChildren.length > 0,
       importedChildrenCount: importedChildren.length,
       childrenByClass: classRows,
-      hasActiveImportedCodes: activeCodes.length > 0,
+      hasActiveImportedCodes: activeCodesCount > 0,
       issuedCodesCount: issuedCodes.length,
-      activeCodesCount: activeCodes.length,
+      activeCodesCount,
       completedSessionsCount: completedImportedSessions.length,
       pausedSessionsCount: pausedImportedSessions.length,
       notStartedCount,
