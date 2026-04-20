@@ -372,9 +372,13 @@ function computeRecommendation(grade: Grade, scores: SessionScore[]): string {
   return `Предварительная рекомендация: поддерживающий маршрут с поэтапным усилением базовых навыков. Основание: средний доменный балл ${avg.toFixed(1)}/10, минимальный доменный показатель ${min}/10. ${strongestNote} ${weakestNote} Нужна дополнительная оценка специалистом и наблюдение в динамике; автоматическое решение по одной сессии недопустимо. ${cautionNote}`;
 }
 
+function asArray<T>(value: unknown): T[] {
+  return Array.isArray(value) ? (value as T[]) : [];
+}
+
 function normalizeAnswers(grade: Grade, answers: Session["answers"]): SessionAnswer[] {
   const gradeQuestions = QUESTION_SETS[grade];
-  return (answers ?? []).map((answer, index) => {
+  return asArray<SessionAnswer>(answers).map((answer, index) => {
     const question = gradeQuestions.find((item) => item.id === answer.questionId);
     return {
       ...answer,
@@ -385,7 +389,7 @@ function normalizeAnswers(grade: Grade, answers: Session["answers"]): SessionAns
 }
 
 function normalizeAccessCodes(rawCodes: unknown, children: Child[]): AccessCodeRecord[] {
-  const rawItems = Array.isArray(rawCodes) ? (rawCodes as Partial<AccessCodeRecord>[]) : [];
+  const rawItems = asArray<Partial<AccessCodeRecord>>(rawCodes);
   const childById = new Map(children.map((child) => [child.id, child]));
   const normalizedByCode = new Map<string, AccessCodeRecord>();
 
@@ -427,21 +431,22 @@ function normalizeAccessCodes(rawCodes: unknown, children: Child[]): AccessCodeR
 }
 
 function normalizeStore(raw: Store): Store {
-  const legacyCampaignMap = new Map((raw.campaigns ?? []).map((campaign) => [campaign.id, campaign]));
-  const normalizedChildren: Child[] = (raw.children ?? []).map((child) => {
+  const legacyCampaigns = asArray<Campaign>(raw.campaigns);
+  const legacyCampaignMap = new Map(legacyCampaigns.map((campaign) => [campaign.id, campaign]));
+  const normalizedChildren: Child[] = asArray<Child>(raw.children).map((child) => {
     const fallbackGrade = child.grade === 6 ? 6 : 4;
     const classGroup = normalizeClassGroup((child as Partial<Child>).classGroup, fallbackGrade);
     return { ...child, grade: gradeFromClassGroup(classGroup), classGroup };
   });
   const childById = new Map(normalizedChildren.map((child) => [child.id, child]));
 
-  const sessions = (raw.sessions ?? []).map((session) => {
+  const sessions = asArray<Session>(raw.sessions).map((session) => {
     const child = childById.get(session.childId);
     const fallbackGrade = child?.grade ?? session.grade ?? 4;
     const campaignGroupFromLegacy = legacyCampaignMap.get(session.campaignId)?.title;
     const classGroup = normalizeClassGroup(session.campaignId || campaignGroupFromLegacy, fallbackGrade);
     const resolvedGrade = child?.grade ?? gradeFromClassGroup(classGroup);
-    const normalizedAnswers = normalizeAnswers(resolvedGrade, session.answers ?? []);
+    const normalizedAnswers = normalizeAnswers(resolvedGrade, session.answers);
     const totalQuestions = QUESTION_SETS[resolvedGrade].length;
     const scores = computeScoresFromAnswers(resolvedGrade, normalizedAnswers, session.startedAt);
 
@@ -569,7 +574,13 @@ export default function Home() {
   const [loggedChildId, setLoggedChildId] = useState<string | null>(null);
 
   useEffect(() => {
-    window.localStorage.setItem(STORAGE_KEY, JSON.stringify({ ...store, campaigns: FIXED_CAMPAIGNS }));
+    try {
+      window.localStorage.setItem(STORAGE_KEY, JSON.stringify({ ...store, campaigns: FIXED_CAMPAIGNS }));
+    } catch (error) {
+      if (process.env.NODE_ENV !== "production") {
+        console.warn("[dev] failed to persist store to localStorage", error);
+      }
+    }
   }, [store]);
 
   const childrenById = useMemo(() => new Map(store.children.map((child) => [child.id, child])), [store.children]);
