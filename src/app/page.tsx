@@ -456,13 +456,15 @@ function normalizeStore(raw: Store): Store {
     const child = childById.get(session.childId);
     const fallbackGrade = child?.grade ?? session.grade ?? 4;
     const campaignGroupFromLegacy = legacyCampaignMap.get(session.campaignId)?.title;
+    // Legacy mapped campaign titles come from storage, so validate them before giving migration priority.
+    const mappedLegacyClassGroup = isClassGroup(campaignGroupFromLegacy) ? campaignGroupFromLegacy : undefined;
     const explicitClassGroup = isClassGroup(session.campaignId)
       ? session.campaignId
       : isClassGroup((session as Partial<Session> & { classGroup?: unknown }).classGroup)
         ? (session as Partial<Session> & { classGroup?: unknown }).classGroup
         : undefined;
     // Legacy session.campaignId may be an opaque campaign key (e.g. "cmp-*"), so we must map it to a class group before normalization.
-    const classGroup = normalizeClassGroup(campaignGroupFromLegacy ?? explicitClassGroup, fallbackGrade);
+    const classGroup = normalizeClassGroup(mappedLegacyClassGroup ?? explicitClassGroup, fallbackGrade);
     const resolvedGrade = child?.grade ?? gradeFromClassGroup(classGroup);
     const normalizedAnswers = normalizeAnswers(resolvedGrade, session.answers);
     const totalQuestions = QUESTION_SETS[resolvedGrade].length;
