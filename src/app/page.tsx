@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, useEffect, useMemo, useState } from "react";
+import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import { QUESTION_SETS } from "./itemBank";
 
 type Grade = 4 | 6;
@@ -572,6 +572,8 @@ export default function Home() {
   const [childClassGroup, setChildClassGroup] = useState<ClassGroup>("4А");
   const [loginCode, setLoginCode] = useState("");
   const [loggedChildId, setLoggedChildId] = useState<string | null>(null);
+  const [pendingAnswerBySession, setPendingAnswerBySession] = useState<Record<string, string>>({});
+  const pendingAnswerBySessionRef = useRef<Record<string, string>>({});
 
   useEffect(() => {
     try {
@@ -765,6 +767,24 @@ export default function Home() {
   }
 
   function answerQuestion(sessionId: string, selectedIndex: number): void {
+    const currentSession = store.sessions.find((session) => session.id === sessionId && session.status === "active");
+    if (!currentSession) return;
+
+    const currentQuestion = QUESTION_SETS[currentSession.grade][currentSession.currentQuestionIndex];
+    if (!currentQuestion) return;
+
+    const alreadyAnswered = currentSession.answers.some((answer) => answer.questionId === currentQuestion.id);
+    const pendingForSession = pendingAnswerBySessionRef.current[sessionId];
+    if (pendingForSession && pendingForSession !== currentQuestion.id) {
+      delete pendingAnswerBySessionRef.current[sessionId];
+    }
+    const isPendingForQuestion = pendingForSession === currentQuestion.id;
+    if (alreadyAnswered || isPendingForQuestion) return;
+
+    const nextPending = { ...pendingAnswerBySessionRef.current, [sessionId]: currentQuestion.id };
+    pendingAnswerBySessionRef.current = nextPending;
+    setPendingAnswerBySession(nextPending);
+
     setStore((prev) => ({
       ...prev,
       sessions: prev.sessions.map((session) => {
@@ -773,6 +793,7 @@ export default function Home() {
         const questions = QUESTION_SETS[session.grade];
         const question = questions[session.currentQuestionIndex];
         if (!question) return session;
+        if (session.answers.some((answer) => answer.questionId === question.id)) return session;
 
         const newAnswer: SessionAnswer = {
           questionId: question.id,
@@ -1295,6 +1316,10 @@ export default function Home() {
                 const progressPct = Math.round((activeChildSession.answers.length / questions.length) * 100);
                 const batteries = BATTERIES[activeChildSession.grade];
                 const currentBattery = question ? batteries.find((item) => item.id === question.batteryId) : null;
+                const answerLockedForQuestion = question
+                  ? pendingAnswerBySession[activeChildSession.id] === question.id ||
+                    activeChildSession.answers.some((answer) => answer.questionId === question.id)
+                  : false;
 
                 return (
                   <div className="rounded-lg border border-slate-600 bg-slate-900 p-3">
@@ -1331,8 +1356,9 @@ export default function Home() {
                             <button
                               key={`${question.id}-${idx}`}
                               type="button"
-                              className="w-full rounded-md border border-slate-500 bg-slate-900 px-3 py-2 text-left text-slate-100 hover:border-sky-400 hover:bg-slate-700"
+                              className="w-full rounded-md border border-slate-500 bg-slate-900 px-3 py-2 text-left text-slate-100 hover:border-sky-400 hover:bg-slate-700 disabled:cursor-not-allowed disabled:opacity-60"
                               onClick={() => answerQuestion(activeChildSession.id, idx)}
+                              disabled={answerLockedForQuestion}
                             >
                               {option}
                             </button>
