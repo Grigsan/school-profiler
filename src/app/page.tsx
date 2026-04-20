@@ -105,6 +105,7 @@ type ClassSummaryRow = {
   expertReviewNeeded: number;
   recommendationDistribution: Array<{ label: string; count: number }>;
   domainDifficultyHighlights: string[];
+  subskillDifficultyHighlights: string[];
 };
 
 type RecommendationCategory = "более сильный профиль" | "базовый / поддерживающий маршрут" | "требуется экспертная проверка";
@@ -692,12 +693,6 @@ function adminStatusLabel(session: Session): string {
   return "на паузе";
 }
 
-function sessionStatusTechnicalLabel(status: SessionStatus): string {
-  if (status === "completed") return "completed";
-  if (status === "active") return "active";
-  return "paused";
-}
-
 const ACCESS_CODE_FORMAT = /^[A-Z0-9]{6}$/;
 
 function normalizeAccessCode(input: string): string {
@@ -1223,6 +1218,17 @@ export default function Home() {
           return { title: battery.shortTitle, avg };
         });
         const hardest = avgScaledByDomain.filter((item) => item.avg > 0).sort((a, b) => a.avg - b.avg).slice(0, 2);
+        const subskillMap = new Map<string, number[]>();
+        completed.forEach((session) => {
+          getSubskillStats(session).forEach((item) => {
+            const key = `${item.domain}: ${item.label}`;
+            subskillMap.set(key, [...(subskillMap.get(key) ?? []), item.accuracyPct]);
+          });
+        });
+        const hardestSubskills = [...subskillMap.entries()]
+          .map(([label, values]) => ({ label, mean: average(values) }))
+          .sort((a, b) => a.mean - b.mean)
+          .slice(0, 4);
 
         return {
           classGroup: group,
@@ -1237,6 +1243,9 @@ export default function Home() {
           domainDifficultyHighlights: hardest.length
             ? hardest.map((item) => `${item.title}: средний scaled ${item.avg.toFixed(1)}/10`)
             : ["Недостаточно завершённых сессий для оценки."],
+          subskillDifficultyHighlights: hardestSubskills.length
+            ? hardestSubskills.map((item) => `${item.label}: средняя точность ${item.mean.toFixed(1)}%`)
+            : ["Недостаточно завершённых сессий для оценки субнавыков."],
         };
       }),
     [store.children, store.sessions],
@@ -1289,6 +1298,7 @@ export default function Home() {
         "Нужен экспертный разбор",
         "Распределение рекомендаций",
         "Трудные домены",
+        "Трудные субнавыки",
       ],
       ...classSummaryRows.map((row) => [
         row.classGroup,
@@ -1299,6 +1309,7 @@ export default function Home() {
         String(row.expertReviewNeeded),
         row.recommendationDistribution.map((item) => `${item.label}: ${item.count}`).join(" | ") || "—",
         row.domainDifficultyHighlights.join(" | "),
+        row.subskillDifficultyHighlights.join(" | "),
       ]),
     ];
   }, [classSummaryRows]);
@@ -1711,7 +1722,7 @@ export default function Home() {
                         <dl className="grid gap-2 text-sm md:grid-cols-2">
                           <div><dt className="text-slate-400">ID ученика (student_id)</dt><dd className="font-semibold">{child?.registryId ?? "—"}</dd></div>
                           <div><dt className="text-slate-400">Класс</dt><dd className="font-semibold">{selectedReportSession.campaignId}</dd></div>
-                          <div><dt className="text-slate-400">Статус сессии</dt><dd>{adminStatusLabel(selectedReportSession)} ({sessionStatusTechnicalLabel(selectedReportSession.status)})</dd></div>
+                          <div><dt className="text-slate-400">Статус сессии</dt><dd>{adminStatusLabel(selectedReportSession)}</dd></div>
                           <div><dt className="text-slate-400">Дата/время завершения</dt><dd>{formatDateTime(selectedReportSession.completedAt)}</dd></div>
                           <div><dt className="text-slate-400">Суммарная длительность</dt><dd>{formatDuration(selectedReportSession.scores.reduce((acc, item) => acc + item.durationSec, 0))}</dd></div>
                         </dl>
@@ -2024,6 +2035,14 @@ export default function Home() {
                       <ul className="list-disc pl-5 text-slate-300">
                         {row.domainDifficultyHighlights.map((item, idx) => (
                           <li key={`${row.classGroup}-hard-${idx}`}>{item}</li>
+                        ))}
+                      </ul>
+                    </div>
+                    <div className="mt-2">
+                      <p className="font-medium text-slate-200">Подсветка трудных субнавыков:</p>
+                      <ul className="list-disc pl-5 text-slate-300">
+                        {row.subskillDifficultyHighlights.map((item, idx) => (
+                          <li key={`${row.classGroup}-subhard-${idx}`}>{item}</li>
                         ))}
                       </ul>
                     </div>
@@ -2345,6 +2364,7 @@ export default function Home() {
                       <th className="p-2">Нужен экспертный разбор</th>
                       <th className="p-2">Распределение рекомендаций</th>
                       <th className="p-2">Трудные домены</th>
+                      <th className="p-2">Трудные субнавыки</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -2358,6 +2378,7 @@ export default function Home() {
                         <td className="p-2">{row.expertReviewNeeded}</td>
                         <td className="p-2">{row.recommendationDistribution.map((item) => `${item.label}: ${item.count}`).join(" | ") || "—"}</td>
                         <td className="p-2">{row.domainDifficultyHighlights.join(" | ")}</td>
+                        <td className="p-2">{row.subskillDifficultyHighlights.join(" | ")}</td>
                       </tr>
                     ))}
                   </tbody>
