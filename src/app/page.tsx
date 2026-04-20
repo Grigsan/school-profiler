@@ -268,6 +268,7 @@ type BatteryDefinition = {
 };
 
 const STORAGE_KEY = "school-profiler-store-v1";
+const LAST_BACKUP_AT_STORAGE_KEY = "school-profiler-last-backup-at";
 const BACKUP_SCHEMA = "school-profiler-backup";
 const BACKUP_FORMAT_VERSION: BackupFormatVersion = "1.1.0";
 const ADMIN_PIN = "4321";
@@ -1258,6 +1259,10 @@ export default function Home() {
   const [isImportingRegistry, setIsImportingRegistry] = useState(false);
   const [backupImportPreview, setBackupImportPreview] = useState<BackupImportPreview | null>(null);
   const [isImportingBackup, setIsImportingBackup] = useState(false);
+  const [lastBackupAt, setLastBackupAt] = useState<string | null>(() => {
+    if (typeof window === "undefined") return null;
+    return window.localStorage.getItem(LAST_BACKUP_AT_STORAGE_KEY);
+  });
   const [loginCode, setLoginCode] = useState("");
   const [loggedChildId, setLoggedChildId] = useState<string | null>(null);
   const [pendingAnswerBySession, setPendingAnswerBySession] = useState<Record<string, string>>({});
@@ -1272,6 +1277,15 @@ export default function Home() {
       }
     }
   }, [store]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    if (!lastBackupAt) {
+      window.localStorage.removeItem(LAST_BACKUP_AT_STORAGE_KEY);
+      return;
+    }
+    window.localStorage.setItem(LAST_BACKUP_AT_STORAGE_KEY, lastBackupAt);
+  }, [lastBackupAt]);
 
   const childrenById = useMemo(() => new Map(store.children.map((child) => [child.id, child])), [store.children]);
   const accessCodesByCode = useMemo(
@@ -1361,6 +1375,7 @@ export default function Home() {
 
     const formattedDate = new Date().toISOString().replaceAll(":", "-");
     downloadText(JSON.stringify(backup, null, 2), `school-profiler-backup-${formattedDate}.json`, "application/json;charset=utf-8");
+    setLastBackupAt(backup.exportedAt);
     show("ok", "Резервная копия сохранена в JSON-файл.");
   }
 
@@ -1419,6 +1434,7 @@ export default function Home() {
     }
 
     setStore(backupImportPreview.normalizedStore);
+    setLastBackupAt(backupImportPreview.backup.exportedAt);
     setBackupImportPreview(null);
     setLoggedChildId(null);
     setPendingAnswerBySession({});
@@ -2071,6 +2087,65 @@ export default function Home() {
       });
   }, [hasChildUsedCode, selectedRegistryClass, store.accessCodes, store.children, store.sessions]);
 
+  const cycleReadiness = useMemo(() => {
+    const importedChildren = store.children.filter((child) => !child.registryId.startsWith("ANON-"));
+    const importedChildrenById = new Set(importedChildren.map((child) => child.id));
+    const importedSessions = store.sessions.filter((session) => importedChildrenById.has(session.childId));
+    const completedImportedSessions = importedSessions.filter((session) => session.status === "completed");
+    const pausedImportedSessions = importedSessions.filter((session) => session.status === "paused");
+    const issuedCodes = store.accessCodes.filter((code) => importedChildrenById.has(code.childId));
+    const childrenWithSession = new Set(importedSessions.map((session) => session.childId));
+    const notStartedCount = importedChildren.filter((child) => !childrenWithSession.has(child.id)).length;
+    const pendingReviewCount = completedImportedSessions.filter((session) => session.reviewStatus !== "решение принято").length;
+    const finalizedCount = completedImportedSessions.filter((session) => session.reviewStatus === "решение принято").length;
+
+    const classRows = CLASS_GROUPS.map((group) => {
+      const classChildren = importedChildren.filter((child) => child.classGroup === group);
+      const classChildIds = new Set(classChildren.map((child) => child.id));
+      const classCodes = store.accessCodes.filter((code) => classChildIds.has(code.childId) && code.status !== "Недействителен");
+      const classSessions = importedSessions.filter((session) => session.campaignId === group);
+      const classCompleted = classSessions.filter((session) => session.status === "completed");
+      const classPaused = classSessions.filter((session) => session.status === "paused");
+      const classPendingReviews = classCompleted.filter((session) => session.reviewStatus !== "решение принято");
+      const classFinalized = classCompleted.filter((session) => session.reviewStatus === "решение принято");
+      return {
+        classGroup: group,
+        importedStudents: classChildren.length,
+        activeCodes: classCodes.length,
+        completedSessions: classCompleted.length,
+        pausedSessions: classPaused.length,
+        pendingReviews: classPendingReviews.length,
+        finalizedDecisions: classFinalized.length,
+      };
+    });
+
+    const warnings: string[] = [];
+    classRows.forEach((row) => {
+      if (row.importedStudents > 0 && row.activeCodes === 0) {
+        warnings.push(`Для класса ${row.classGroup} коды ещё не сгенерированы.`);
+      }
+      if (row.pausedSessions > 0) {
+        warnings.push(`Для класса ${row.classGroup} есть незавершённые попытки.`);
+      }
+    });
+    if (pendingReviewCount > 0) warnings.push("Есть результаты без финального решения специалиста.");
+    if (completedImportedSessions.length > 0) warnings.push("Рекомендуется сохранить резервную копию после завершения текущего цикла.");
+
+    return {
+      registryLoaded: importedChildren.length > 0,
+      importedChildrenCount: importedChildren.length,
+      childrenByClass: classRows,
+      hasCodesGenerated: issuedCodes.length > 0,
+      issuedCodesCount: issuedCodes.length,
+      completedSessionsCount: completedImportedSessions.length,
+      pausedSessionsCount: pausedImportedSessions.length,
+      notStartedCount,
+      pendingReviewCount,
+      finalizedCount,
+      warnings,
+    };
+  }, [store.accessCodes, store.children, store.sessions]);
+
   const selectedReportSession = useMemo(
     () => completedSessions.find((session) => session.id === selectedReportSessionId) ?? completedSessions[0],
     [completedSessions, selectedReportSessionId],
@@ -2711,6 +2786,94 @@ export default function Home() {
                   </li>
                 ))}
               </ul>
+            </article>
+
+            <article className={`${cardClass} md:col-span-2`}>
+              <h2 className="mb-3 text-lg font-semibold text-white">Как работать с новым циклом тестирования</h2>
+              <ol className="list-decimal space-y-2 pl-5 text-sm text-slate-200">
+                <li>Загрузить реестр.</li>
+                <li>Проверить распределение по классам 4А / 4Б / 6А / 6Б.</li>
+                <li>Сгенерировать коды доступа.</li>
+                <li>Сохранить резервную копию.</li>
+                <li>Раздать коды участникам.</li>
+                <li>Отслеживать прохождение.</li>
+                <li>Проверить завершённые и незавершённые попытки.</li>
+                <li>Просмотреть результаты и качество попыток.</li>
+                <li>Принять финальные решения.</li>
+                <li>Выгрузить итоговые таблицы.</li>
+                <li>Снова сохранить резервную копию.</li>
+              </ol>
+            </article>
+
+            <article className={`${cardClass} md:col-span-2`}>
+              <h2 className="mb-3 text-lg font-semibold text-white">Готовность текущего цикла</h2>
+              <div className="grid gap-3 text-sm md:grid-cols-2 xl:grid-cols-3">
+                <p className="rounded-md border border-slate-700 bg-slate-950 p-3">
+                  Реестр: <strong>{cycleReadiness.registryLoaded ? "загружен" : "не загружен"}</strong>
+                </p>
+                <p className="rounded-md border border-slate-700 bg-slate-950 p-3">
+                  Коды: <strong>{cycleReadiness.hasCodesGenerated ? "сгенерированы" : "не сгенерированы"}</strong>
+                </p>
+                <p className="rounded-md border border-slate-700 bg-slate-950 p-3">
+                  Выдано кодов: <strong>{cycleReadiness.issuedCodesCount}</strong>
+                </p>
+                <p className="rounded-md border border-slate-700 bg-slate-950 p-3">
+                  Завершённых сессий: <strong>{cycleReadiness.completedSessionsCount}</strong>
+                </p>
+                <p className="rounded-md border border-slate-700 bg-slate-950 p-3">
+                  На паузе: <strong>{cycleReadiness.pausedSessionsCount}</strong>
+                </p>
+                <p className="rounded-md border border-slate-700 bg-slate-950 p-3">
+                  Ещё не начато: <strong>{cycleReadiness.notStartedCount}</strong>
+                </p>
+                <p className="rounded-md border border-slate-700 bg-slate-950 p-3">
+                  Решений не рассмотрено: <strong>{cycleReadiness.pendingReviewCount}</strong>
+                </p>
+                <p className="rounded-md border border-slate-700 bg-slate-950 p-3">
+                  Решений финализировано: <strong>{cycleReadiness.finalizedCount}</strong>
+                </p>
+                <p className="rounded-md border border-slate-700 bg-slate-950 p-3">
+                  Последняя резервная копия: <strong>{formatDateTime(lastBackupAt ?? undefined)}</strong>
+                </p>
+              </div>
+
+              <div className="mt-3 grid gap-2 text-xs text-slate-200">
+                {cycleReadiness.childrenByClass.map((item) => (
+                  <p key={`cycle-child-count-${item.classGroup}`} className="rounded-md border border-slate-700 bg-slate-900 p-2">
+                    <strong>{item.classGroup}</strong>: учеников {item.importedStudents}
+                  </p>
+                ))}
+              </div>
+
+              <div className="mt-4 rounded-md border border-indigo-700/70 bg-indigo-950/25 p-3">
+                <p className="mb-2 text-sm font-semibold text-indigo-100">Индикаторы готовности по классам</p>
+                <div className="grid gap-3 md:grid-cols-2">
+                  {cycleReadiness.childrenByClass.map((item) => (
+                    <div key={`readiness-${item.classGroup}`} className="rounded-md border border-slate-700 bg-slate-900 p-3 text-sm text-slate-200">
+                      <p className="mb-2 font-semibold text-white">{item.classGroup}</p>
+                      <ul className="space-y-1 text-xs text-slate-300">
+                        <li>Импортировано учеников: {item.importedStudents}</li>
+                        <li>Активных кодов: {item.activeCodes}</li>
+                        <li>Завершённых сессий: {item.completedSessions}</li>
+                        <li>На паузе: {item.pausedSessions}</li>
+                        <li>Ожидают рассмотрения: {item.pendingReviews}</li>
+                        <li>Финализировано решений: {item.finalizedDecisions}</li>
+                      </ul>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              {cycleReadiness.warnings.length > 0 && (
+                <div className="mt-4 rounded-md border border-amber-600/60 bg-amber-950/20 p-3 text-sm text-amber-100">
+                  <p className="mb-2 font-semibold">Предупреждения по рабочему циклу</p>
+                  <ul className="list-disc space-y-1 pl-5">
+                    {cycleReadiness.warnings.map((warning, index) => (
+                      <li key={`cycle-warning-${index}`}>{warning}</li>
+                    ))}
+                  </ul>
+                </div>
+              )}
             </article>
 
             <article className={cardClass}>
