@@ -128,7 +128,19 @@ type Store = {
   classSummaries?: ClassSummaryRow[];
 };
 
-type BackupFormatVersion = "1.0.0";
+type BackupFormatVersion = "1.0.0" | "1.1.0";
+
+type BackupMetadata = {
+  storageKey: string;
+  appVersion: string;
+  classes: ClassGroup[];
+  childrenCount: number;
+  accessCodesCount: number;
+  sessionsCount: number;
+  completedSessionsCount: number;
+  recommendationsCount: number;
+  overridesCount: number;
+};
 
 type AppBackup = {
   schema: "school-profiler-backup";
@@ -136,6 +148,7 @@ type AppBackup = {
   exportedAt: string;
   environmentNote?: string;
   appStorageKey: string;
+  metadata: BackupMetadata;
   data: Store;
 };
 
@@ -195,7 +208,7 @@ type BatteryDefinition = {
 
 const STORAGE_KEY = "school-profiler-store-v1";
 const BACKUP_SCHEMA = "school-profiler-backup";
-const BACKUP_FORMAT_VERSION: BackupFormatVersion = "1.0.0";
+const BACKUP_FORMAT_VERSION: BackupFormatVersion = "1.1.0";
 const ADMIN_PIN = "4321";
 const DEMO_ADMIN_HELPER_ENABLED = process.env.NODE_ENV !== "production";
 const CLASS_GROUPS: ClassGroup[] = ["4А", "4Б", "6А", "6Б"];
@@ -750,7 +763,7 @@ function parseBackupPayload(raw: unknown): { ok: true; preview: BackupImportPrev
   if (raw.schema !== BACKUP_SCHEMA) {
     return { ok: false, error: "Неизвестный формат резервной копии (schema)." };
   }
-  if (raw.backupFormatVersion !== BACKUP_FORMAT_VERSION) {
+  if (raw.backupFormatVersion !== "1.0.0" && raw.backupFormatVersion !== BACKUP_FORMAT_VERSION) {
     return { ok: false, error: `Неподдерживаемая версия резервной копии: ${String(raw.backupFormatVersion)}.` };
   }
   if (typeof raw.exportedAt !== "string" || Number.isNaN(Date.parse(raw.exportedAt))) {
@@ -761,6 +774,9 @@ function parseBackupPayload(raw: unknown): { ok: true; preview: BackupImportPrev
   }
   if (!Array.isArray(raw.data.children) || !Array.isArray(raw.data.accessCodes) || !Array.isArray(raw.data.sessions)) {
     return { ok: false, error: "В блоке data отсутствуют обязательные массивы children/accessCodes/sessions." };
+  }
+  if (raw.backupFormatVersion === "1.1.0" && !isRecord(raw.metadata)) {
+    return { ok: false, error: "В резервной копии версии 1.1.0 отсутствует блок metadata." };
   }
 
   try {
@@ -877,6 +893,24 @@ function printHtmlReport(title: string, htmlContent: string): boolean {
   popup.print();
   popup.close();
   return true;
+}
+
+function buildBackupMetadata(store: Store): BackupMetadata {
+  const completedSessionsCount = store.sessions.filter((session) => session.status === "completed").length;
+  const recommendationsCount = store.sessions.filter((session) => session.recommendation.trim().length > 0).length;
+  const overridesCount = store.sessions.filter((session) => Boolean(session.adminOverride?.text?.trim())).length;
+
+  return {
+    storageKey: STORAGE_KEY,
+    appVersion: "0.1.0",
+    classes: CLASS_GROUPS,
+    childrenCount: store.children.length,
+    accessCodesCount: store.accessCodes.length,
+    sessionsCount: store.sessions.length,
+    completedSessionsCount,
+    recommendationsCount,
+    overridesCount,
+  };
 }
 
 function adminStatusLabel(session: Session): string {
@@ -1058,6 +1092,7 @@ export default function Home() {
         campaigns: FIXED_CAMPAIGNS,
         ...(classSummariesFromStorage ? { classSummaries: classSummariesFromStorage } : {}),
       },
+      metadata: buildBackupMetadata(store),
     };
 
     const formattedDate = new Date().toISOString().replaceAll(":", "-");
