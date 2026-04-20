@@ -352,10 +352,6 @@ function uid(prefix: string): string {
   return `${prefix}-${Math.random().toString(36).slice(2, 8)}-${Date.now().toString(36)}`;
 }
 
-function createCode(): string {
-  return Math.random().toString(36).slice(2, 8).toUpperCase();
-}
-
 function sessionKey(session: Pick<Session, "childId" | "campaignId">): string {
   return `${session.childId}::${session.campaignId}`;
 }
@@ -1063,16 +1059,6 @@ function validateBackupData(data: Record<string, unknown>): BackupValidationResu
   return { ok: true };
 }
 
-function toCsv(rows: string[][]): string {
-  return rows
-    .map((row) =>
-      row
-        .map((cell) => `"${String(cell).replaceAll("\"", "\"\"")}"`)
-        .join(","),
-    )
-    .join("\n");
-}
-
 function splitDelimitedLine(line: string, delimiter: string): string[] {
   const cells: string[] = [];
   let current = "";
@@ -1635,65 +1621,6 @@ export default function Home() {
     setRegistryImportPreview(null);
   }
 
-  function hasValidActiveCodeForChild(childId: string): boolean {
-    return store.accessCodes.some((record) => {
-      if (record.childId !== childId) return false;
-      const status = accessCodeStatus(record, store.sessions);
-      return status !== "Недействителен" && status !== "Завершён";
-    });
-  }
-
-  function generateCodesForClass(): void {
-    const classChildren = store.children.filter(
-      (child) => child.classGroup === selectedRegistryClass && child.isActive && !child.registryId.startsWith("ANON-"),
-    );
-    if (!classChildren.length) {
-      show("error", "В выбранном классе нет активных учеников.");
-      return;
-    }
-
-    const toIssue = classChildren.filter((child) => !hasValidActiveCodeForChild(child.id));
-    if (!toIssue.length) {
-      show("ok", "Для всех активных учеников выбранного класса коды уже выданы.");
-      return;
-    }
-
-    const nowIso = new Date().toISOString();
-    const nextChildren = [...store.children];
-    const nextCodes = [...store.accessCodes];
-    const codesInUse = new Set(store.accessCodes.map((record) => normalizeAccessCode(record.code)));
-
-    for (const child of toIssue) {
-      let code = createCode();
-      while (codesInUse.has(code)) code = createCode();
-      codesInUse.add(code);
-
-      const childIndex = nextChildren.findIndex((item) => item.id === child.id);
-      if (childIndex >= 0) {
-        nextChildren[childIndex] = { ...nextChildren[childIndex], accessCode: code };
-      }
-
-      nextCodes.unshift({
-        id: uid("ac"),
-        code,
-        childId: child.id,
-        registryId: child.registryId,
-        grade: child.grade,
-        classGroup: child.classGroup,
-        status: "Выдан",
-        createdAt: nowIso,
-        updatedAt: nowIso,
-      });
-    }
-
-    setStore((prev) => ({
-      ...prev,
-      campaigns: FIXED_CAMPAIGNS,
-      children: nextChildren,
-      accessCodes: nextCodes,
-    }));
-    show("ok", `Выданы коды: ${toIssue.length}. Пропущены уже обеспеченные кодами: ${classChildren.length - toIssue.length}.`);
-  }
 
   function loginChild(e: FormEvent): void {
     e.preventDefault();
@@ -2041,51 +1968,6 @@ export default function Home() {
     }));
   }
 
-  function exportCodesByClass(): void {
-    if (!adminUnlocked) {
-      show("error", "Экспорт доступен только в режиме администратора.");
-      return;
-    }
-
-    const classChildren = store.children.filter(
-      (child) => child.classGroup === selectedRegistryClass && !child.registryId.startsWith("ANON-"),
-    );
-    if (!classChildren.length) {
-      show("error", "В выбранном классе нет учеников для экспорта.");
-      return;
-    }
-    const classChildIds = new Set(classChildren.map((child) => child.id));
-    const classCodes = store.accessCodes.filter((record) => classChildIds.has(record.childId));
-    if (!classCodes.length) {
-      show("error", "Нет кодов для экспорта.");
-      return;
-    }
-
-    const rows = [
-      ["student_id", "class_group", "code", "status"],
-      ...classCodes.map((record) => {
-        const status = accessCodeStatus(record, store.sessions);
-        const codeValue = status === "Выдан" ? record.code : maskAccessCode(record.code);
-        return [
-        record.registryId,
-        record.classGroup,
-          codeValue,
-          status,
-        ];
-      }),
-    ];
-
-    const blob = new Blob([toCsv(rows)], { type: "text/csv;charset=utf-8" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = `class-codes-${selectedRegistryClass}-${new Date().toISOString().slice(0, 10)}.csv`;
-    a.click();
-    URL.revokeObjectURL(url);
-
-    show("ok", `Список кодов класса ${selectedRegistryClass} экспортирован в CSV.`);
-  }
-
   const completedSessions = store.sessions.filter((session) => session.status === "completed");
   const incompleteSessions = store.sessions.filter((session) => session.status !== "completed");
   const hasChildUsedCode = useMemo(() => {
@@ -2188,7 +2070,7 @@ export default function Home() {
       registryLoaded: importedChildren.length > 0,
       importedChildrenCount: importedChildren.length,
       childrenByClass: classRows,
-      hasCodesGenerated: activeCodes.length > 0,
+      hasActiveImportedCodes: activeCodes.length > 0,
       issuedCodesCount: issuedCodes.length,
       activeCodesCount: activeCodes.length,
       completedSessionsCount: completedImportedSessions.length,
@@ -2858,12 +2740,12 @@ export default function Home() {
                   Загрузите CSV-реестр, проверьте предпросмотр, исправьте ошибки строк и подтвердите импорт.
                 </p>
                 <p className="rounded-md border border-slate-700 bg-slate-900 p-3">
-                  <strong className="block text-white">Коды задаются администратором вручную вне системы</strong>
-                  Основной путь: подготовить коды заранее, импортировать реестр и выдать детям уже назначенные коды.
+                  <strong className="block text-white">Коды доступа задаются администратором вручную вне системы</strong>
+                  Основной путь: подготовить коды заранее, импортировать реестр и выдать детям уже назначенные коды доступа.
                 </p>
                 <p className="rounded-md border border-slate-700 bg-slate-900 p-3">
-                  <strong className="block text-white">Генерация кодов не требуется для основного рабочего процесса</strong>
-                  Дети входят по коду из импортированного реестра, без обязательной генерации в приложении.
+                  <strong className="block text-white">После импорта дети входят по заранее назначенному коду</strong>
+                  Вход ребёнка выполняется только по access_code из импортированного реестра.
                 </p>
                 <p className="rounded-md border border-slate-700 bg-slate-900 p-3">
                   <strong className="block text-white">Как отслеживать прохождение</strong>
@@ -2891,7 +2773,7 @@ export default function Home() {
                   Реестр: <strong>{cycleReadiness.registryLoaded ? "загружен" : "не загружен"}</strong>
                 </p>
                 <p className="rounded-md border border-slate-700 bg-slate-950 p-3">
-                  Активные коды: <strong>{cycleReadiness.hasCodesGenerated ? "есть" : "нет"}</strong>
+                  Активные коды: <strong>{cycleReadiness.hasActiveImportedCodes ? "есть" : "нет"}</strong>
                 </p>
                 <p className="rounded-md border border-slate-700 bg-slate-950 p-3">
                   Активных кодов всего: <strong>{cycleReadiness.activeCodesCount}</strong>
@@ -2977,8 +2859,8 @@ export default function Home() {
               </p>
               <div className="mb-3 rounded-md border border-sky-700/70 bg-sky-950/20 p-3 text-xs text-sky-100">
                 <p className="font-semibold">Импорт реестра с кодами доступа</p>
-                <p>Коды задаются администратором вручную вне системы.</p>
-                <p>Генерация кодов не требуется для основного рабочего процесса.</p>
+                <p>Коды доступа задаются администратором вручную вне системы.</p>
+                <p>После импорта дети входят по заранее назначенному коду.</p>
               </div>
               <div className="mb-3 flex flex-wrap items-center gap-2">
                 <input
@@ -3061,18 +2943,6 @@ export default function Home() {
                   </select>
                 </label>
               </div>
-              <div className="mb-3 flex flex-wrap gap-2">
-                <button className={buttonSecondaryClass} onClick={exportCodesByClass} type="button">
-                  Экспорт кодов класса (CSV)
-                </button>
-              </div>
-              <details className="mb-3 rounded-md border border-amber-700/60 bg-amber-950/20 p-3 text-xs text-amber-100">
-                <summary className="cursor-pointer font-semibold">Легаси-функция (опционально): автоматическая генерация кодов</summary>
-                <p className="mt-2">Используйте только для старых сценариев. Для основного процесса генерация не нужна.</p>
-                <button className={`${buttonSecondaryClass} mt-2`} onClick={generateCodesForClass} type="button">
-                  Сгенерировать коды для активных учеников класса (легаси)
-                </button>
-              </details>
               <div className="max-h-60 overflow-auto rounded-md border border-slate-600">
                 <table className="w-full text-left text-sm text-slate-100">
                   <thead className="bg-slate-800 text-slate-100">
