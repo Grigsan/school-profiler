@@ -31,6 +31,8 @@ type Child = {
   grade: Grade;
   classGroup: ClassGroup;
   accessCode: string;
+  isActive: boolean;
+  notes?: string;
   createdAt: string;
 };
 
@@ -123,6 +125,42 @@ type Store = {
   accessCodes: AccessCodeRecord[];
   campaigns: Campaign[];
   sessions: Session[];
+};
+
+type ParsedRegistryRow = {
+  rowNumber: number;
+  studentId: string;
+  classGroup: ClassGroup;
+  isActive: boolean;
+  notes: string;
+};
+
+type InvalidRegistryRow = {
+  rowNumber: number;
+  studentIdRaw: string;
+  classGroupRaw: string;
+  isActiveRaw: string;
+  notesRaw: string;
+  issues: string[];
+};
+
+type DuplicateRegistryRow = {
+  rowNumber: number;
+  studentId: string;
+  reason: string;
+};
+
+type RegistryImportPreview = {
+  fileName: string;
+  validRows: ParsedRegistryRow[];
+  invalidRows: InvalidRegistryRow[];
+  duplicateRows: DuplicateRegistryRow[];
+  summary: {
+    totalRows: number;
+    validRows: number;
+    invalidRows: number;
+    duplicateRows: number;
+  };
 };
 
 type BatteryDefinition = {
@@ -611,7 +649,7 @@ function normalizeStore(raw: Store): Store {
   const normalizedChildren: Child[] = asArray<Child>(raw.children).map((child) => {
     const fallbackGrade = child.grade === 6 ? 6 : 4;
     const classGroup = normalizeClassGroup((child as Partial<Child>).classGroup, fallbackGrade);
-    return { ...child, grade: gradeFromClassGroup(classGroup), classGroup };
+    return { ...child, grade: gradeFromClassGroup(classGroup), classGroup, isActive: child.isActive ?? true };
   });
   const childById = new Map(normalizedChildren.map((child) => [child.id, child]));
 
@@ -684,6 +722,49 @@ function toCsv(rows: string[][]): string {
         .join(","),
     )
     .join("\n");
+}
+
+function splitDelimitedLine(line: string, delimiter: string): string[] {
+  const cells: string[] = [];
+  let current = "";
+  let inQuotes = false;
+  for (let i = 0; i < line.length; i += 1) {
+    const char = line[i];
+    if (char === "\"") {
+      if (inQuotes && line[i + 1] === "\"") {
+        current += "\"";
+        i += 1;
+      } else {
+        inQuotes = !inQuotes;
+      }
+      continue;
+    }
+    if (char === delimiter && !inQuotes) {
+      cells.push(current.trim());
+      current = "";
+      continue;
+    }
+    current += char;
+  }
+  cells.push(current.trim());
+  return cells;
+}
+
+function detectDelimiter(firstLine: string): string {
+  const candidates = [",", ";", "\t"];
+  const scored = candidates.map((delimiter) => ({
+    delimiter,
+    count: splitDelimitedLine(firstLine, delimiter).length,
+  }));
+  return scored.sort((a, b) => b.count - a.count)[0].delimiter;
+}
+
+function parseBooleanSafe(rawValue: string): boolean | null {
+  const normalized = rawValue.trim().toLowerCase();
+  if (!normalized) return null;
+  if (["1", "true", "yes", "y", "да", "активен", "active"].includes(normalized)) return true;
+  if (["0", "false", "no", "n", "нет", "неактивен", "inactive"].includes(normalized)) return false;
+  return null;
 }
 
 function downloadText(content: string, filename: string, mimeType: string): void {
@@ -809,7 +890,9 @@ export default function Home() {
   const [adminPinInput, setAdminPinInput] = useState("");
   const [adminUnlocked, setAdminUnlocked] = useState(false);
   const [demoPinVisible, setDemoPinVisible] = useState(false);
-  const [childClassGroup, setChildClassGroup] = useState<ClassGroup>("4А");
+  const [selectedRegistryClass, setSelectedRegistryClass] = useState<ClassGroup>("4А");
+  const [registryImportPreview, setRegistryImportPreview] = useState<RegistryImportPreview | null>(null);
+  const [isImportingRegistry, setIsImportingRegistry] = useState(false);
   const [loginCode, setLoginCode] = useState("");
   const [loggedChildId, setLoggedChildId] = useState<string | null>(null);
   const [pendingAnswerBySession, setPendingAnswerBySession] = useState<Record<string, string>>({});
@@ -882,51 +965,214 @@ export default function Home() {
     show("ok", "Режим администратора открыт.");
   }
 
-  function issueAccessCode(): void {
-    let code = createCode();
-    while (accessCodesByCode.has(code)) {
-      code = createCode();
+  function parseRegistryCsvContent(fileName: string, content: string): RegistryImportPreview {
+    const lines = content.replaceAll("\r\n", "\n").replaceAll("\r", "\n").split("\n").filter((line) => line.trim().length > 0);
+    if (!lines.length) {
+      return {
+        fileName,
+        validRows: [],
+        invalidRows: [],
+        duplicateRows: [],
+        summary: { totalRows: 0, validRows: 0, invalidRows: 0, duplicateRows: 0 },
+      };
+    }
+
+    const delimiter = detectDelimiter(lines[0]);
+    const headers = splitDelimitedLine(lines[0], delimiter).map((header) => header.trim().toLowerCase());
+    const requiredColumns = ["student_id", "class_group", "is_active"];
+    const missing = requiredColumns.filter((column) => !headers.includes(column));
+    if (missing.length) {
+      return {
+        fileName,
+        validRows: [],
+        invalidRows: [
+          {
+            rowNumber: 1,
+            studentIdRaw: "",
+            classGroupRaw: "",
+            isActiveRaw: "",
+            notesRaw: "",
+            issues: [`Отсутствуют обязательные колонки: ${missing.join(", ")}`],
+          },
+        ],
+        duplicateRows: [],
+        summary: { totalRows: Math.max(lines.length - 1, 0), validRows: 0, invalidRows: 1, duplicateRows: 0 },
+      };
+    }
+
+    const columnIndex = new Map(headers.map((header, index) => [header, index]));
+    const studentIdSet = new Set<string>();
+    const duplicates: DuplicateRegistryRow[] = [];
+    const validRows: ParsedRegistryRow[] = [];
+    const invalidRows: InvalidRegistryRow[] = [];
+    const existingStudentIds = new Set(store.children.map((child) => child.registryId.trim().toUpperCase()));
+
+    for (let i = 1; i < lines.length; i += 1) {
+      const cells = splitDelimitedLine(lines[i], delimiter);
+      const rowNumber = i + 1;
+      const studentIdRaw = cells[columnIndex.get("student_id") ?? -1] ?? "";
+      const classGroupRaw = cells[columnIndex.get("class_group") ?? -1] ?? "";
+      const isActiveRaw = cells[columnIndex.get("is_active") ?? -1] ?? "";
+      const notesRaw = columnIndex.has("notes") ? (cells[columnIndex.get("notes") ?? -1] ?? "") : "";
+      const studentId = studentIdRaw.trim();
+      const classGroup = classGroupRaw.trim();
+      const parsedIsActive = parseBooleanSafe(isActiveRaw);
+      const issues: string[] = [];
+
+      if (!studentId) issues.push("student_id пустой");
+      if (!isClassGroup(classGroup)) issues.push("class_group должен быть 4А, 4Б, 6А или 6Б");
+      if (parsedIsActive === null) issues.push("is_active должен быть булевым (true/false, 1/0, да/нет)");
+
+      const normalizedStudentId = studentId.toUpperCase();
+      if (normalizedStudentId && studentIdSet.has(normalizedStudentId)) {
+        duplicates.push({ rowNumber, studentId, reason: "Дубликат внутри файла" });
+        continue;
+      }
+      if (normalizedStudentId && existingStudentIds.has(normalizedStudentId)) {
+        duplicates.push({ rowNumber, studentId, reason: "student_id уже есть в реестре" });
+        continue;
+      }
+
+      if (issues.length) {
+        invalidRows.push({ rowNumber, studentIdRaw, classGroupRaw, isActiveRaw, notesRaw, issues });
+        continue;
+      }
+
+      studentIdSet.add(normalizedStudentId);
+      validRows.push({
+        rowNumber,
+        studentId,
+        classGroup: classGroup as ClassGroup,
+        isActive: parsedIsActive as boolean,
+        notes: notesRaw.trim(),
+      });
+    }
+
+    return {
+      fileName,
+      validRows,
+      invalidRows,
+      duplicateRows: duplicates,
+      summary: {
+        totalRows: Math.max(lines.length - 1, 0),
+        validRows: validRows.length,
+        invalidRows: invalidRows.length,
+        duplicateRows: duplicates.length,
+      },
+    };
+  }
+
+  function handleRegistryFileImport(file: File): void {
+    const lowerFileName = file.name.toLowerCase();
+    if (lowerFileName.endsWith(".xlsx") || lowerFileName.endsWith(".xls")) {
+      show("error", "Импорт Excel пока в режиме подготовки. Сейчас поддерживается CSV.");
+      return;
+    }
+    setIsImportingRegistry(true);
+    const reader = new FileReader();
+    reader.onload = () => {
+      const content = typeof reader.result === "string" ? reader.result : "";
+      const preview = parseRegistryCsvContent(file.name, content);
+      setRegistryImportPreview(preview);
+      setIsImportingRegistry(false);
+      show("ok", `Файл ${file.name} загружен в предпросмотр.`);
+    };
+    reader.onerror = () => {
+      setIsImportingRegistry(false);
+      show("error", "Не удалось прочитать файл импорта.");
+    };
+    reader.readAsText(file, "utf-8");
+  }
+
+  function confirmRegistryImport(): void {
+    if (!registryImportPreview) {
+      show("error", "Нет данных предпросмотра для импорта.");
+      return;
+    }
+    if (!registryImportPreview.validRows.length) {
+      show("error", "Нет корректных строк для импорта.");
+      return;
     }
 
     const nowIso = new Date().toISOString();
-    const child: Child = {
+    const newChildren = registryImportPreview.validRows.map((row) => ({
       id: uid("ch"),
-      registryId: `ANON-${Date.now().toString(36).slice(-4).toUpperCase()}-${Math.random().toString(36).slice(2, 4).toUpperCase()}`,
-      grade: gradeFromClassGroup(childClassGroup),
-      classGroup: childClassGroup,
-      accessCode: code,
+      registryId: row.studentId,
+      grade: gradeFromClassGroup(row.classGroup),
+      classGroup: row.classGroup,
+      accessCode: "",
+      isActive: row.isActive,
+      notes: row.notes || undefined,
       createdAt: nowIso,
-    };
+    }));
 
-    const codeRecord: AccessCodeRecord = {
-      id: uid("ac"),
-      code,
-      childId: child.id,
-      registryId: child.registryId,
-      grade: child.grade,
-      classGroup: child.classGroup,
-      status: "Выдан",
-      createdAt: nowIso,
-      updatedAt: nowIso,
-    };
-
-    // Keep access code issuance atomic: child profile + canonical access-code registry are written together.
     setStore((prev) => ({
       ...prev,
       campaigns: FIXED_CAMPAIGNS,
-      children: [child, ...prev.children],
-      accessCodes: [codeRecord, ...prev.accessCodes],
+      children: [...newChildren, ...prev.children],
     }));
-    if (process.env.NODE_ENV !== "production") {
-      console.info("[dev] issued access code", {
-        issuedCode: codeRecord.code,
-        childId: codeRecord.childId,
-        studentId: codeRecord.registryId,
-        classGroup: codeRecord.classGroup,
-        source: "store.accessCodes",
+    show("ok", `Импорт завершён: ${newChildren.length} учеников добавлено.`);
+    setRegistryImportPreview(null);
+  }
+
+  function hasValidActiveCodeForChild(childId: string): boolean {
+    return store.accessCodes.some((record) => {
+      if (record.childId !== childId) return false;
+      const status = accessCodeStatus(record, store.sessions);
+      return status !== "Недействителен" && status !== "Завершён";
+    });
+  }
+
+  function generateCodesForClass(): void {
+    const classChildren = store.children.filter(
+      (child) => child.classGroup === selectedRegistryClass && child.isActive && !child.registryId.startsWith("ANON-"),
+    );
+    if (!classChildren.length) {
+      show("error", "В выбранном классе нет активных учеников.");
+      return;
+    }
+
+    const toIssue = classChildren.filter((child) => !hasValidActiveCodeForChild(child.id));
+    if (!toIssue.length) {
+      show("ok", "Для всех активных учеников выбранного класса коды уже выданы.");
+      return;
+    }
+
+    const nowIso = new Date().toISOString();
+    const nextChildren = [...store.children];
+    const nextCodes = [...store.accessCodes];
+    const codesInUse = new Set(store.accessCodes.map((record) => normalizeAccessCode(record.code)));
+
+    for (const child of toIssue) {
+      let code = createCode();
+      while (codesInUse.has(code)) code = createCode();
+      codesInUse.add(code);
+
+      const childIndex = nextChildren.findIndex((item) => item.id === child.id);
+      if (childIndex >= 0) {
+        nextChildren[childIndex] = { ...nextChildren[childIndex], accessCode: code };
+      }
+
+      nextCodes.unshift({
+        id: uid("ac"),
+        code,
+        childId: child.id,
+        registryId: child.registryId,
+        grade: child.grade,
+        classGroup: child.classGroup,
+        status: "Выдан",
+        createdAt: nowIso,
+        updatedAt: nowIso,
       });
     }
-    show("ok", `Код доступа создан: ${code}`);
+
+    setStore((prev) => ({
+      ...prev,
+      campaigns: FIXED_CAMPAIGNS,
+      children: nextChildren,
+      accessCodes: nextCodes,
+    }));
+    show("ok", `Выданы коды: ${toIssue.length}. Пропущены уже обеспеченные кодами: ${classChildren.length - toIssue.length}.`);
   }
 
   function loginChild(e: FormEvent): void {
@@ -1216,37 +1462,49 @@ export default function Home() {
     show("ok", "Рекомендация администратора сохранена.");
   }
 
-  function exportCodes(): void {
+  function exportCodesByClass(): void {
     if (!adminUnlocked) {
       show("error", "Экспорт доступен только в режиме администратора.");
       return;
     }
 
-    if (!store.accessCodes.length) {
+    const classChildren = store.children.filter(
+      (child) => child.classGroup === selectedRegistryClass && !child.registryId.startsWith("ANON-"),
+    );
+    if (!classChildren.length) {
+      show("error", "В выбранном классе нет учеников для экспорта.");
+      return;
+    }
+    const classChildIds = new Set(classChildren.map((child) => child.id));
+    const classCodes = store.accessCodes.filter((record) => classChildIds.has(record.childId));
+    if (!classCodes.length) {
       show("error", "Нет кодов для экспорта.");
       return;
     }
 
     const rows = [
-      ["registryId", "classGroup", "grade", "accessCode", "createdAt"],
-      ...store.accessCodes.map((record) => [
+      ["student_id", "class_group", "code", "status"],
+      ...classCodes.map((record) => {
+        const status = accessCodeStatus(record, store.sessions);
+        const codeValue = status === "Выдан" ? record.code : maskAccessCode(record.code);
+        return [
         record.registryId,
         record.classGroup,
-        record.grade.toString(),
-        record.code,
-        record.createdAt,
-      ]),
+          codeValue,
+          status,
+        ];
+      }),
     ];
 
     const blob = new Blob([toCsv(rows)], { type: "text/csv;charset=utf-8" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
-    a.download = `access-codes-${new Date().toISOString().slice(0, 10)}.csv`;
+    a.download = `class-codes-${selectedRegistryClass}-${new Date().toISOString().slice(0, 10)}.csv`;
     a.click();
     URL.revokeObjectURL(url);
 
-    show("ok", "Список кодов экспортирован в CSV.");
+    show("ok", `Список кодов класса ${selectedRegistryClass} экспортирован в CSV.`);
   }
 
   const completedSessions = store.sessions.filter((session) => session.status === "completed");
@@ -1256,6 +1514,30 @@ export default function Home() {
     store.sessions.forEach((session) => usedIds.add(session.childId));
     return usedIds;
   }, [store.sessions]);
+  const registryClassStats = useMemo(
+    () =>
+      CLASS_GROUPS.map((group) => {
+        const classChildren = store.children.filter((child) => child.classGroup === group && !child.registryId.startsWith("ANON-"));
+        return {
+          classGroup: group,
+          totalImported: classChildren.length,
+          active: classChildren.filter((child) => child.isActive).length,
+          inactive: classChildren.filter((child) => !child.isActive).length,
+        };
+      }),
+    [store.children],
+  );
+  const classCodeRows = useMemo(() => {
+    const childById = new Map(store.children.map((child) => [child.id, child]));
+    return store.accessCodes
+      .filter((record) => record.classGroup === selectedRegistryClass && !record.registryId.startsWith("ANON-"))
+      .map((record) => {
+        const child = childById.get(record.childId);
+        const status = accessCodeStatus(record, store.sessions);
+        const shouldMask = hasChildUsedCode.has(record.childId) || status !== "Выдан";
+        return { ...record, status, shouldMask, isActive: child?.isActive ?? true };
+      });
+  }, [hasChildUsedCode, selectedRegistryClass, store.accessCodes, store.children, store.sessions]);
 
   const selectedReportSession = useMemo(
     () => completedSessions.find((session) => session.id === selectedReportSessionId) ?? completedSessions[0],
@@ -1744,14 +2026,81 @@ export default function Home() {
             </article>
 
             <article className={cardClass}>
-              <h2 className="mb-3 text-lg font-semibold text-white">Анонимный реестр / коды доступа</h2>
+              <h2 className="mb-3 text-lg font-semibold text-white">Реестр учеников / коды доступа</h2>
+              <p className="mb-3 text-sm text-slate-300">
+                Формат импорта (CSV): <code>student_id,class_group,is_active,notes</code>. Excel-формат (.xlsx) зарезервирован для следующего шага.
+              </p>
+              <div className="mb-3 flex flex-wrap items-center gap-2">
+                <input
+                  accept=".csv,.txt,.xlsx,.xls"
+                  className="text-sm text-slate-200 file:mr-3 file:rounded-md file:border-0 file:bg-slate-700 file:px-3 file:py-2 file:text-slate-100 hover:file:bg-slate-600"
+                  onChange={(e) => {
+                    const file = e.target.files?.[0];
+                    if (file) handleRegistryFileImport(file);
+                    e.currentTarget.value = "";
+                  }}
+                  type="file"
+                />
+                {isImportingRegistry && <span className="text-xs text-slate-300">Чтение файла…</span>}
+              </div>
+
+              {registryImportPreview && (
+                <div className="mb-4 space-y-3 rounded-md border border-slate-600 bg-slate-950 p-3">
+                  <p className="text-sm text-slate-200">Предпросмотр файла: {registryImportPreview.fileName}</p>
+                  <p className="text-xs text-slate-300">
+                    Всего строк: {registryImportPreview.summary.totalRows} · корректных: {registryImportPreview.summary.validRows} · ошибок:{" "}
+                    {registryImportPreview.summary.invalidRows} · дубликатов: {registryImportPreview.summary.duplicateRows}
+                  </p>
+                  <div className="flex flex-wrap gap-2">
+                    <button className={buttonPrimaryClass} onClick={confirmRegistryImport} type="button">
+                      Подтвердить импорт корректных строк
+                    </button>
+                    <button className={buttonSecondaryClass} onClick={() => setRegistryImportPreview(null)} type="button">
+                      Очистить предпросмотр
+                    </button>
+                  </div>
+                  {registryImportPreview.invalidRows.length > 0 && (
+                    <div className="max-h-32 overflow-auto rounded-md border border-rose-800">
+                      <p className="p-2 text-xs text-rose-200">Некорректные строки</p>
+                      <ul className="space-y-1 p-2 text-xs text-rose-200">
+                        {registryImportPreview.invalidRows.map((row) => (
+                          <li key={`invalid-${row.rowNumber}`}>
+                            Строка {row.rowNumber}: {row.issues.join("; ")}
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+                  {registryImportPreview.duplicateRows.length > 0 && (
+                    <div className="max-h-32 overflow-auto rounded-md border border-amber-700">
+                      <p className="p-2 text-xs text-amber-200">Дубликаты</p>
+                      <ul className="space-y-1 p-2 text-xs text-amber-200">
+                        {registryImportPreview.duplicateRows.map((row) => (
+                          <li key={`dup-${row.rowNumber}`}>
+                            Строка {row.rowNumber}: {row.studentId} ({row.reason})
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              <div className="mb-3 grid gap-2 text-xs text-slate-200">
+                {registryClassStats.map((item) => (
+                  <p key={item.classGroup} className="rounded-md border border-slate-700 bg-slate-900 p-2">
+                    <strong>{item.classGroup}</strong>: всего {item.totalImported}, активных {item.active}, неактивных {item.inactive}
+                  </p>
+                ))}
+              </div>
+
               <div className="mb-3">
                 <label className="text-sm text-slate-200">
-                  Класс ученика
+                  Класс для операций
                   <select
                     className="ml-2 rounded-md border border-slate-500 bg-slate-800 p-1 text-slate-100"
-                    value={childClassGroup}
-                    onChange={(e) => setChildClassGroup(e.target.value as ClassGroup)}
+                    value={selectedRegistryClass}
+                    onChange={(e) => setSelectedRegistryClass(e.target.value as ClassGroup)}
                   >
                     {CLASS_GROUPS.map((group) => (
                       <option key={group} value={group}>
@@ -1762,36 +2111,41 @@ export default function Home() {
                 </label>
               </div>
               <div className="mb-3 flex flex-wrap gap-2">
-                <button className={buttonPrimaryClass} onClick={issueAccessCode} type="button">
-                  Выдать код доступа
+                <button className={buttonPrimaryClass} onClick={generateCodesForClass} type="button">
+                  Сгенерировать коды для активных учеников класса
                 </button>
-                <button className={buttonSecondaryClass} onClick={exportCodes} type="button">
-                  Экспорт кодов (CSV)
+                <button className={buttonSecondaryClass} onClick={exportCodesByClass} type="button">
+                  Экспорт кодов класса (CSV)
                 </button>
               </div>
               <div className="max-h-60 overflow-auto rounded-md border border-slate-600">
                 <table className="w-full text-left text-sm text-slate-100">
                   <thead className="bg-slate-800 text-slate-100">
                     <tr>
-                      <th className="p-2">Registry ID</th>
+                      <th className="p-2">student_id</th>
                       <th className="p-2">Класс</th>
+                      <th className="p-2">Активен</th>
                       <th className="p-2">Код</th>
-                      <th className="p-2">Статус кода</th>
+                      <th className="p-2">Статус</th>
                     </tr>
                   </thead>
                   <tbody>
-                    {store.accessCodes.map((record) => {
-                      const status = accessCodeStatus(record, store.sessions);
-                      const shouldMask = hasChildUsedCode.has(record.childId) || status === "Завершён";
-                      return (
-                        <tr className="border-t border-slate-700" key={record.id}>
-                          <td className="p-2">{record.registryId}</td>
-                          <td className="p-2">{record.classGroup}</td>
-                          <td className="p-2 font-mono text-sky-300">{shouldMask ? maskAccessCode(record.code) : record.code}</td>
-                          <td className="p-2">{status}</td>
-                        </tr>
-                      );
-                    })}
+                    {classCodeRows.map((record) => (
+                      <tr className="border-t border-slate-700" key={record.id}>
+                        <td className="p-2">{record.registryId}</td>
+                        <td className="p-2">{record.classGroup}</td>
+                        <td className="p-2">{record.isActive ? "Да" : "Нет"}</td>
+                        <td className="p-2 font-mono text-sky-300">{record.shouldMask ? maskAccessCode(record.code) : record.code}</td>
+                        <td className="p-2">{record.status}</td>
+                      </tr>
+                    ))}
+                    {!classCodeRows.length && (
+                      <tr>
+                        <td className="p-2 text-slate-400" colSpan={5}>
+                          Для выбранного класса пока нет выданных кодов.
+                        </td>
+                      </tr>
+                    )}
                   </tbody>
                 </table>
               </div>
