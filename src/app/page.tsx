@@ -251,6 +251,10 @@ type DuplicateRegistryRow = {
 
 type RegistryImportPreview = {
   fileName: string;
+  context: {
+    mode: RegistryImportMode;
+    targetClass: ClassGroup;
+  };
   validRows: ParsedRegistryRow[];
   invalidRows: InvalidRegistryRow[];
   duplicateRows: DuplicateRegistryRow[];
@@ -263,6 +267,11 @@ type RegistryImportPreview = {
 };
 
 type RegistryImportMode = "append" | "replace_class" | "reset_all";
+
+type RegistryImportSource = {
+  fileName: string;
+  content: string;
+};
 
 type BatteryDefinition = {
   id: string;
@@ -1278,6 +1287,7 @@ export default function Home() {
   const [selectedRegistryClass, setSelectedRegistryClass] = useState<ClassGroup>("4А");
   const [registryImportMode, setRegistryImportMode] = useState<RegistryImportMode>("replace_class");
   const [registryImportPreview, setRegistryImportPreview] = useState<RegistryImportPreview | null>(null);
+  const [registryImportSource, setRegistryImportSource] = useState<RegistryImportSource | null>(null);
   const [isImportingRegistry, setIsImportingRegistry] = useState(false);
   const [backupImportPreview, setBackupImportPreview] = useState<BackupImportPreview | null>(null);
   const [isImportingBackup, setIsImportingBackup] = useState(false);
@@ -1481,6 +1491,7 @@ export default function Home() {
     if (!lines.length) {
       return {
         fileName,
+        context: { mode, targetClass },
         validRows: [],
         invalidRows: [],
         duplicateRows: [],
@@ -1495,6 +1506,7 @@ export default function Home() {
     if (missing.length) {
       return {
         fileName,
+        context: { mode, targetClass },
         validRows: [],
         invalidRows: [
           {
@@ -1581,6 +1593,7 @@ export default function Home() {
 
     return {
       fileName,
+      context: { mode, targetClass },
       validRows,
       invalidRows,
       duplicateRows: duplicates,
@@ -1600,24 +1613,53 @@ export default function Home() {
       return;
     }
     setIsImportingRegistry(true);
+    const importModeAtUpload = registryImportMode;
+    const targetClassAtUpload = selectedRegistryClass;
     const reader = new FileReader();
     reader.onload = () => {
       const content = typeof reader.result === "string" ? reader.result : "";
-      const preview = parseRegistryCsvContent(file.name, content, registryImportMode, selectedRegistryClass);
+      const preview = parseRegistryCsvContent(file.name, content, importModeAtUpload, targetClassAtUpload);
+      setRegistryImportSource({ fileName: file.name, content });
       setRegistryImportPreview(preview);
       setIsImportingRegistry(false);
       show("ok", `Файл ${file.name} загружен в предпросмотр.`);
     };
     reader.onerror = () => {
       setIsImportingRegistry(false);
+      setRegistryImportSource(null);
       show("error", "Не удалось прочитать файл импорта.");
     };
     reader.readAsText(file, "utf-8");
   }
 
+  function handleRegistryImportModeChange(nextMode: RegistryImportMode): void {
+    setRegistryImportMode(nextMode);
+    if (!registryImportSource) return;
+    setRegistryImportPreview(
+      parseRegistryCsvContent(registryImportSource.fileName, registryImportSource.content, nextMode, selectedRegistryClass),
+    );
+  }
+
+  function handleSelectedRegistryClassChange(nextClass: ClassGroup): void {
+    setSelectedRegistryClass(nextClass);
+    if (!registryImportSource) return;
+    setRegistryImportPreview(parseRegistryCsvContent(registryImportSource.fileName, registryImportSource.content, registryImportMode, nextClass));
+  }
+
   function confirmRegistryImport(): void {
     if (!registryImportPreview) {
       show("error", "Нет данных предпросмотра для импорта.");
+      return;
+    }
+    const isPreviewStale =
+      registryImportPreview.context.mode !== registryImportMode ||
+      registryImportPreview.context.targetClass !== selectedRegistryClass;
+    if (isPreviewStale) {
+      show("error", "Предпросмотр устарел после изменения режима или класса. Обновите предпросмотр и повторите импорт.");
+      return;
+    }
+    if (!registryImportSource) {
+      show("error", "Источник предпросмотра недоступен. Загрузите файл реестра заново.");
       return;
     }
     if (!registryImportPreview.validRows.length) {
@@ -1740,6 +1782,7 @@ export default function Home() {
       );
     }
     setRegistryImportPreview(null);
+    setRegistryImportSource(null);
   }
 
 
@@ -3004,7 +3047,7 @@ export default function Home() {
                       type="radio"
                       name="registryImportMode"
                       checked={registryImportMode === "replace_class"}
-                      onChange={() => setRegistryImportMode("replace_class")}
+                      onChange={() => handleRegistryImportModeChange("replace_class")}
                     />{" "}
                     Заменить реестр выбранного класса
                   </label>
@@ -3013,7 +3056,7 @@ export default function Home() {
                       type="radio"
                       name="registryImportMode"
                       checked={registryImportMode === "append"}
-                      onChange={() => setRegistryImportMode("append")}
+                      onChange={() => handleRegistryImportModeChange("append")}
                     />{" "}
                     Добавить новые строки в реестр
                   </label>
@@ -3022,7 +3065,7 @@ export default function Home() {
                       type="radio"
                       name="registryImportMode"
                       checked={registryImportMode === "reset_all"}
-                      onChange={() => setRegistryImportMode("reset_all")}
+                      onChange={() => handleRegistryImportModeChange("reset_all")}
                     />{" "}
                     Очистить текущий реестр и импортировать заново
                   </label>
@@ -3058,7 +3101,14 @@ export default function Home() {
                     >
                       Подтвердить импорт корректных строк
                     </button>
-                    <button className={buttonSecondaryClass} onClick={() => setRegistryImportPreview(null)} type="button">
+                    <button
+                      className={buttonSecondaryClass}
+                      onClick={() => {
+                        setRegistryImportPreview(null);
+                        setRegistryImportSource(null);
+                      }}
+                      type="button"
+                    >
                       Очистить предпросмотр
                     </button>
                   </div>
@@ -3107,7 +3157,7 @@ export default function Home() {
                   <select
                     className="ml-2 rounded-md border border-slate-500 bg-slate-800 p-1 text-slate-100"
                     value={selectedRegistryClass}
-                    onChange={(e) => setSelectedRegistryClass(e.target.value as ClassGroup)}
+                    onChange={(e) => handleSelectedRegistryClassChange(e.target.value as ClassGroup)}
                   >
                     {CLASS_GROUPS.map((group) => (
                       <option key={group} value={group}>
