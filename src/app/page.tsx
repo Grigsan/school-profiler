@@ -692,6 +692,12 @@ function adminStatusLabel(session: Session): string {
   return "на паузе";
 }
 
+function sessionStatusTechnicalLabel(status: SessionStatus): string {
+  if (status === "completed") return "completed";
+  if (status === "active") return "active";
+  return "paused";
+}
+
 const ACCESS_CODE_FORMAT = /^[A-Z0-9]{6}$/;
 
 function normalizeAccessCode(input: string): string {
@@ -795,6 +801,16 @@ export default function Home() {
   function show(type: "ok" | "error", text: string): void {
     setMessage({ type, text });
     setTimeout(() => setMessage(null), 2800);
+  }
+
+  async function copyRowsToClipboard(rows: string[][], successMessage: string): Promise<void> {
+    const payload = rows.map((row) => row.join("\t")).join("\n");
+    try {
+      await navigator.clipboard.writeText(payload);
+      show("ok", successMessage);
+    } catch {
+      show("error", "Не удалось скопировать таблицу в буфер обмена.");
+    }
   }
 
   function unlockAdmin(e: FormEvent): void {
@@ -1231,6 +1247,62 @@ export default function Home() {
     [completedSessions, selectedAnalyticsClass],
   );
 
+  const completedResultsExportRows = useMemo(() => {
+    return [
+      [
+        "student_id",
+        "Класс",
+        "Статус",
+        "Дата завершения",
+        "Интеллект raw/scaled/время",
+        "Логика raw/scaled/время",
+        "Математика raw/scaled/время",
+        "Итоговая рекомендация",
+      ],
+      ...completedSessions.map((session) => {
+        const child = store.children.find((item) => item.id === session.childId);
+        const intel = session.scores.find((score) => score.batteryId.includes("intelligence"));
+        const logic = session.scores.find((score) => score.batteryId.includes("logic"));
+        const math = session.scores.find((score) => score.batteryId.includes("math_aptitude"));
+        return [
+          child?.registryId ?? "—",
+          session.campaignId,
+          adminStatusLabel(session),
+          formatDateTime(session.completedAt),
+          `${intel?.rawScore ?? 0}% / ${intel?.scaledScore ?? 1} / ${formatDuration(intel?.durationSec ?? 0)}`,
+          `${logic?.rawScore ?? 0}% / ${logic?.scaledScore ?? 1} / ${formatDuration(logic?.durationSec ?? 0)}`,
+          `${math?.rawScore ?? 0}% / ${math?.scaledScore ?? 1} / ${formatDuration(math?.durationSec ?? 0)}`,
+          session.adminOverride?.text || session.recommendation,
+        ];
+      }),
+    ];
+  }, [completedSessions, store.children]);
+
+  const classSummaryExportRows = useMemo(() => {
+    return [
+      [
+        "Класс",
+        "Всего учеников",
+        "Завершили",
+        "Не завершили",
+        "На паузе",
+        "Нужен экспертный разбор",
+        "Распределение рекомендаций",
+        "Трудные домены",
+      ],
+      ...classSummaryRows.map((row) => [
+        row.classGroup,
+        String(row.totalStudents),
+        String(row.completed),
+        String(row.notCompleted),
+        String(row.paused),
+        String(row.expertReviewNeeded),
+        row.recommendationDistribution.map((item) => `${item.label}: ${item.count}`).join(" | ") || "—",
+        row.domainDifficultyHighlights.join(" | "),
+      ]),
+    ];
+  }, [classSummaryRows]);
+
   const childDomainRadarData = useMemo(() => {
     if (!selectedReportSession) return [];
     return BATTERIES[selectedReportSession.grade].map((battery) => {
@@ -1637,10 +1709,11 @@ export default function Home() {
                     return (
                       <div className="space-y-3 rounded-md border border-slate-700 bg-slate-900 p-3">
                         <dl className="grid gap-2 text-sm md:grid-cols-2">
-                          <div><dt className="text-slate-400">student_id</dt><dd className="font-semibold">{child?.registryId ?? "—"}</dd></div>
+                          <div><dt className="text-slate-400">ID ученика (student_id)</dt><dd className="font-semibold">{child?.registryId ?? "—"}</dd></div>
                           <div><dt className="text-slate-400">Класс</dt><dd className="font-semibold">{selectedReportSession.campaignId}</dd></div>
-                          <div><dt className="text-slate-400">Статус сессии</dt><dd>{adminStatusLabel(selectedReportSession)}</dd></div>
+                          <div><dt className="text-slate-400">Статус сессии</dt><dd>{adminStatusLabel(selectedReportSession)} ({sessionStatusTechnicalLabel(selectedReportSession.status)})</dd></div>
                           <div><dt className="text-slate-400">Дата/время завершения</dt><dd>{formatDateTime(selectedReportSession.completedAt)}</dd></div>
+                          <div><dt className="text-slate-400">Суммарная длительность</dt><dd>{formatDuration(selectedReportSession.scores.reduce((acc, item) => acc + item.durationSec, 0))}</dd></div>
                         </dl>
 
                         <div className="overflow-x-auto rounded-md border border-slate-700">
@@ -1648,8 +1721,8 @@ export default function Home() {
                             <thead className="bg-slate-800">
                               <tr>
                                 <th className="p-2">Домен</th>
-                                <th className="p-2">Raw score</th>
-                                <th className="p-2">Scaled score</th>
+                                <th className="p-2">Сырые баллы (raw score)</th>
+                                <th className="p-2">Шкальный балл (scaled score)</th>
                                 <th className="p-2">Длительность</th>
                                 <th className="p-2">Краткая интерпретация</th>
                                 <th className="p-2">Субнавыковая интерпретация</th>
@@ -1686,6 +1759,13 @@ export default function Home() {
                             <li>Рекомендации носят консультативный характер.</li>
                             <li>Финальное образовательное решение требует очного профессионального разбора.</li>
                           </ul>
+                        </div>
+
+                        <div className="rounded-md border border-slate-700 bg-slate-950/70 p-3">
+                          <p className="text-sm font-semibold text-slate-100">Графики индивидуального отчёта специалиста</p>
+                          <p className="mt-1 text-xs text-slate-300">
+                            Визуализации встроены в отчёт и интерпретируются совместно с таблицей доменных результатов.
+                          </p>
                         </div>
 
                         <div className="grid gap-3 md:grid-cols-2">
@@ -1950,6 +2030,12 @@ export default function Home() {
                   </div>
                 ))}
               </div>
+              <div className="mt-4 rounded-md border border-slate-700 bg-slate-950/70 p-3">
+                <p className="text-sm font-semibold text-slate-100">Графики сводки по классу</p>
+                <p className="mt-1 text-xs text-slate-300">
+                  Ниже — визуализации по выбранному классу, используемые как часть рабочей сводки специалиста, а не отдельный аналитический экран.
+                </p>
+              </div>
               <div className="mt-4 grid gap-3 md:grid-cols-2">
                 <div className="rounded-md border border-slate-700 bg-slate-950/70 p-3">
                   <p className="mb-2 text-sm font-semibold">Распределение scaled по доменам (выбранный класс)</p>
@@ -2056,7 +2142,7 @@ export default function Home() {
             </article>
 
             <article className={`${cardClass} md:col-span-2`}>
-              <h2 className="mb-2 text-lg font-semibold text-white">Исследовательский блок корреляций (только для специалиста)</h2>
+              <h2 className="mb-2 text-lg font-semibold text-white">Исследовательский блок корреляций (только для специалиста, разведочный)</h2>
               <p className="text-sm text-amber-200">
                 Корреляции носят ориентировочный характер и не являются доказательством причинно-следственной связи. При малом объёме
                 выборки интерпретация должна быть особенно осторожной.
@@ -2168,17 +2254,40 @@ export default function Home() {
 
             <article className={`${cardClass} md:col-span-2`}>
               <h2 className="mb-3 text-lg font-semibold text-white">Экспорт-таблица: завершённые результаты детей</h2>
+              <div className="mb-3 flex flex-wrap gap-2">
+                <button
+                  className={buttonSecondaryClass}
+                  onClick={() => {
+                    void copyRowsToClipboard(completedResultsExportRows, "Таблица завершённых результатов скопирована (TSV).");
+                  }}
+                  type="button"
+                >
+                  Копировать таблицу (TSV)
+                </button>
+                <button
+                  className={buttonSecondaryClass}
+                  onClick={() => {
+                    void copyRowsToClipboard(
+                      completedResultsExportRows.map((row) => [row.join("; ")]),
+                      "Таблица скопирована в одноколоночном виде.",
+                    );
+                  }}
+                  type="button"
+                >
+                  Копировать в текстовом виде
+                </button>
+              </div>
               <div className="overflow-x-auto rounded-md border border-slate-700">
                 <table className="w-full text-left text-xs text-slate-100 md:text-sm">
                   <thead className="bg-slate-800">
                     <tr>
-                      <th className="p-2">student_id</th>
+                      <th className="p-2">ID ученика</th>
                       <th className="p-2">Класс</th>
                       <th className="p-2">Статус</th>
                       <th className="p-2">Завершено</th>
-                      <th className="p-2">Интеллект (raw/scaled)</th>
-                      <th className="p-2">Логика (raw/scaled)</th>
-                      <th className="p-2">Математика (raw/scaled)</th>
+                      <th className="p-2">Интеллект (raw/scaled/время)</th>
+                      <th className="p-2">Логика (raw/scaled/время)</th>
+                      <th className="p-2">Математика (raw/scaled/время)</th>
                       <th className="p-2">Итоговая рекомендация</th>
                     </tr>
                   </thead>
@@ -2194,9 +2303,9 @@ export default function Home() {
                           <td className="p-2">{session.campaignId}</td>
                           <td className="p-2">{adminStatusLabel(session)}</td>
                           <td className="p-2">{formatDateTime(session.completedAt)}</td>
-                          <td className="p-2">{intel?.rawScore ?? 0}% / {intel?.scaledScore ?? 1}</td>
-                          <td className="p-2">{logic?.rawScore ?? 0}% / {logic?.scaledScore ?? 1}</td>
-                          <td className="p-2">{math?.rawScore ?? 0}% / {math?.scaledScore ?? 1}</td>
+                          <td className="p-2">{intel?.rawScore ?? 0}% / {intel?.scaledScore ?? 1} / {formatDuration(intel?.durationSec ?? 0)}</td>
+                          <td className="p-2">{logic?.rawScore ?? 0}% / {logic?.scaledScore ?? 1} / {formatDuration(logic?.durationSec ?? 0)}</td>
+                          <td className="p-2">{math?.rawScore ?? 0}% / {math?.scaledScore ?? 1} / {formatDuration(math?.durationSec ?? 0)}</td>
                           <td className="p-2">{session.adminOverride?.text || session.recommendation}</td>
                         </tr>
                       );
@@ -2213,6 +2322,17 @@ export default function Home() {
 
             <article className={`${cardClass} md:col-span-2`}>
               <h2 className="mb-3 text-lg font-semibold text-white">Экспорт-таблица: сводка классов</h2>
+              <div className="mb-3 flex flex-wrap gap-2">
+                <button
+                  className={buttonSecondaryClass}
+                  onClick={() => {
+                    void copyRowsToClipboard(classSummaryExportRows, "Таблица сводки классов скопирована (TSV).");
+                  }}
+                  type="button"
+                >
+                  Копировать таблицу (TSV)
+                </button>
+              </div>
               <div className="overflow-x-auto rounded-md border border-slate-700">
                 <table className="w-full text-left text-xs text-slate-100 md:text-sm">
                   <thead className="bg-slate-800">
