@@ -1643,27 +1643,10 @@ export default function Home() {
     }
 
     const nowIso = new Date().toISOString();
-    const newChildren = rowsToImport.map((row) => ({
-      id: uid("ch"),
-      registryId: row.studentId,
-      grade: gradeFromClassGroup(row.classGroup),
-      classGroup: row.classGroup,
-      accessCode: row.accessCode,
-      isActive: row.isActive,
-      notes: row.notes || undefined,
-      createdAt: nowIso,
-    }));
-    const newAccessCodes: AccessCodeRecord[] = newChildren.map((child, index) => ({
-      id: uid("ac"),
-      code: rowsToImport[index].accessCode,
-      childId: child.id,
-      registryId: child.registryId,
-      grade: child.grade,
-      classGroup: child.classGroup,
-      status: child.isActive ? "Выдан" : "Недействителен",
-      createdAt: nowIso,
-      updatedAt: nowIso,
-    }));
+    let committedRowsCount = 0;
+    let committedCodesCount = 0;
+    let rejectedCodes: string[] = [];
+    let applied = false;
 
     setStore((prev) => {
       const nextBase =
@@ -1676,6 +1659,57 @@ export default function Home() {
                 sessions: prev.sessions.filter((session) => session.campaignId !== selectedRegistryClass),
               }
             : { children: prev.children, accessCodes: prev.accessCodes, sessions: prev.sessions };
+
+      const existingCodes = new Set(nextBase.accessCodes.map((record) => normalizeAccessCode(record.code)));
+      const incomingCodes = new Set<string>();
+      const acceptedRows: typeof rowsToImport = [];
+      const conflicts: string[] = [];
+
+      for (const row of rowsToImport) {
+        const normalizedCode = normalizeAccessCode(row.accessCode);
+        const isDuplicate = existingCodes.has(normalizedCode) || incomingCodes.has(normalizedCode);
+        if (isDuplicate) {
+          conflicts.push(normalizedCode);
+          continue;
+        }
+        incomingCodes.add(normalizedCode);
+        acceptedRows.push({ ...row, accessCode: normalizedCode });
+      }
+
+      if (!acceptedRows.length) {
+        rejectedCodes = Array.from(new Set(conflicts));
+        applied = false;
+        committedRowsCount = 0;
+        committedCodesCount = 0;
+        return prev;
+      }
+
+      const newChildren = acceptedRows.map((row) => ({
+        id: uid("ch"),
+        registryId: row.studentId,
+        grade: gradeFromClassGroup(row.classGroup),
+        classGroup: row.classGroup,
+        accessCode: row.accessCode,
+        isActive: row.isActive,
+        notes: row.notes || undefined,
+        createdAt: nowIso,
+      }));
+      const newAccessCodes: AccessCodeRecord[] = newChildren.map((child, index) => ({
+        id: uid("ac"),
+        code: acceptedRows[index].accessCode,
+        childId: child.id,
+        registryId: child.registryId,
+        grade: child.grade,
+        classGroup: child.classGroup,
+        status: child.isActive ? "Выдан" : "Недействителен",
+        createdAt: nowIso,
+        updatedAt: nowIso,
+      }));
+
+      rejectedCodes = Array.from(new Set(conflicts));
+      committedRowsCount = newChildren.length;
+      committedCodesCount = newAccessCodes.length;
+      applied = true;
 
       return {
         ...prev,
@@ -1692,7 +1726,19 @@ export default function Home() {
         : registryImportMode === "replace_class"
           ? `Реестр класса ${selectedRegistryClass} заменён`
           : "Строки добавлены в текущий реестр";
-    show("ok", `${actionLabel}: ${newChildren.length} учеников и ${newAccessCodes.length} кодов.`);
+    if (!applied) {
+      const rejectedSuffix = rejectedCodes.length ? ` Конфликтующие коды: ${rejectedCodes.join(", ")}.` : "";
+      show("error", `Импорт не выполнен: все строки конфликтуют с уже существующими access_code.${rejectedSuffix}`);
+      return;
+    }
+
+    show("ok", `${actionLabel}: ${committedRowsCount} учеников и ${committedCodesCount} кодов.`);
+    if (rejectedCodes.length) {
+      show(
+        "error",
+        `Часть строк пропущена из-за дублирующихся access_code (${rejectedCodes.length}): ${rejectedCodes.join(", ")}.`,
+      );
+    }
     setRegistryImportPreview(null);
   }
 
