@@ -103,8 +103,12 @@ function gradeFromClassGroup(group: ClassGroup): Grade {
   return group.startsWith("4") ? 4 : 6;
 }
 
+function isClassGroup(value: unknown): value is ClassGroup {
+  return typeof value === "string" && CLASS_GROUPS.includes(value as ClassGroup);
+}
+
 function normalizeClassGroup(value: unknown, fallbackGrade: Grade): ClassGroup {
-  if (typeof value === "string" && CLASS_GROUPS.includes(value as ClassGroup)) {
+  if (isClassGroup(value)) {
     return value as ClassGroup;
   }
 
@@ -444,7 +448,13 @@ function normalizeStore(raw: Store): Store {
     const child = childById.get(session.childId);
     const fallbackGrade = child?.grade ?? session.grade ?? 4;
     const campaignGroupFromLegacy = legacyCampaignMap.get(session.campaignId)?.title;
-    const classGroup = normalizeClassGroup(session.campaignId || campaignGroupFromLegacy, fallbackGrade);
+    const explicitClassGroup = isClassGroup(session.campaignId)
+      ? session.campaignId
+      : isClassGroup((session as Partial<Session> & { classGroup?: unknown }).classGroup)
+        ? (session as Partial<Session> & { classGroup?: unknown }).classGroup
+        : undefined;
+    // Legacy session.campaignId may be an opaque campaign key (e.g. "cmp-*"), so we must map it to a class group before normalization.
+    const classGroup = normalizeClassGroup(campaignGroupFromLegacy ?? explicitClassGroup, fallbackGrade);
     const resolvedGrade = child?.grade ?? gradeFromClassGroup(classGroup);
     const normalizedAnswers = normalizeAnswers(resolvedGrade, session.answers);
     const totalQuestions = QUESTION_SETS[resolvedGrade].length;
