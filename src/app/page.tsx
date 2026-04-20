@@ -227,6 +227,7 @@ type ParsedRegistryRow = {
   rowNumber: number;
   studentId: string;
   classGroup: ClassGroup;
+  accessCode: string;
   isActive: boolean;
   notes: string;
 };
@@ -235,6 +236,7 @@ type InvalidRegistryRow = {
   rowNumber: number;
   studentIdRaw: string;
   classGroupRaw: string;
+  accessCodeRaw: string;
   isActiveRaw: string;
   notesRaw: string;
   issues: string[];
@@ -242,7 +244,8 @@ type InvalidRegistryRow = {
 
 type DuplicateRegistryRow = {
   rowNumber: number;
-  studentId: string;
+  value: string;
+  field: "student_id" | "access_code";
   reason: string;
 };
 
@@ -1468,7 +1471,7 @@ export default function Home() {
 
     const delimiter = detectDelimiter(lines[0]);
     const headers = splitDelimitedLine(lines[0], delimiter).map((header) => header.trim().toLowerCase());
-    const requiredColumns = ["student_id", "class_group", "is_active"];
+    const requiredColumns = ["student_id", "class_group", "access_code", "is_active"];
     const missing = requiredColumns.filter((column) => !headers.includes(column));
     if (missing.length) {
       return {
@@ -1479,6 +1482,7 @@ export default function Home() {
             rowNumber: 1,
             studentIdRaw: "",
             classGroupRaw: "",
+            accessCodeRaw: "",
             isActiveRaw: "",
             notesRaw: "",
             issues: [`Отсутствуют обязательные колонки: ${missing.join(", ")}`],
@@ -1491,47 +1495,62 @@ export default function Home() {
 
     const columnIndex = new Map(headers.map((header, index) => [header, index]));
     const studentIdSet = new Set<string>();
+    const accessCodeSet = new Set<string>();
     const duplicates: DuplicateRegistryRow[] = [];
     const validRows: ParsedRegistryRow[] = [];
     const invalidRows: InvalidRegistryRow[] = [];
     const existingStudentIds = new Set(store.children.map((child) => child.registryId.trim().toUpperCase()));
+    const existingAccessCodes = new Set(store.accessCodes.map((record) => normalizeAccessCode(record.code)));
 
     for (let i = 1; i < lines.length; i += 1) {
       const cells = splitDelimitedLine(lines[i], delimiter);
       const rowNumber = i + 1;
       const studentIdRaw = cells[columnIndex.get("student_id") ?? -1] ?? "";
       const classGroupRaw = cells[columnIndex.get("class_group") ?? -1] ?? "";
+      const accessCodeRaw = cells[columnIndex.get("access_code") ?? -1] ?? "";
       const isActiveRaw = cells[columnIndex.get("is_active") ?? -1] ?? "";
       const notesRaw = columnIndex.has("notes") ? (cells[columnIndex.get("notes") ?? -1] ?? "") : "";
       const studentId = studentIdRaw.trim();
       const classGroup = classGroupRaw.trim();
+      const accessCode = normalizeAccessCode(accessCodeRaw);
       const parsedIsActive = parseBooleanSafe(isActiveRaw);
       const issues: string[] = [];
 
       if (!studentId) issues.push("student_id пустой");
       if (!isClassGroup(classGroup)) issues.push("class_group должен быть 4А, 4Б, 6А или 6Б");
+      if (!ACCESS_CODE_FORMAT.test(accessCode)) issues.push("access_code должен состоять из 6 символов A-Z/0-9");
       if (parsedIsActive === null) issues.push("is_active должен быть булевым (true/false, 1/0, да/нет)");
 
       const normalizedStudentId = studentId.toUpperCase();
+      if (accessCode && accessCodeSet.has(accessCode)) {
+        duplicates.push({ rowNumber, value: accessCode, field: "access_code", reason: "Дубликат кода внутри файла" });
+        continue;
+      }
+      if (accessCode && existingAccessCodes.has(accessCode)) {
+        duplicates.push({ rowNumber, value: accessCode, field: "access_code", reason: "access_code уже существует в системе" });
+        continue;
+      }
       if (normalizedStudentId && studentIdSet.has(normalizedStudentId)) {
-        duplicates.push({ rowNumber, studentId, reason: "Дубликат внутри файла" });
+        duplicates.push({ rowNumber, value: studentId, field: "student_id", reason: "Дубликат внутри файла" });
         continue;
       }
       if (normalizedStudentId && existingStudentIds.has(normalizedStudentId)) {
-        duplicates.push({ rowNumber, studentId, reason: "student_id уже есть в реестре" });
+        duplicates.push({ rowNumber, value: studentId, field: "student_id", reason: "student_id уже есть в реестре" });
         continue;
       }
 
       if (issues.length) {
-        invalidRows.push({ rowNumber, studentIdRaw, classGroupRaw, isActiveRaw, notesRaw, issues });
+        invalidRows.push({ rowNumber, studentIdRaw, classGroupRaw, accessCodeRaw, isActiveRaw, notesRaw, issues });
         continue;
       }
 
       studentIdSet.add(normalizedStudentId);
+      accessCodeSet.add(accessCode);
       validRows.push({
         rowNumber,
         studentId,
         classGroup: classGroup as ClassGroup,
+        accessCode,
         isActive: parsedIsActive as boolean,
         notes: notesRaw.trim(),
       });
@@ -1589,18 +1608,30 @@ export default function Home() {
       registryId: row.studentId,
       grade: gradeFromClassGroup(row.classGroup),
       classGroup: row.classGroup,
-      accessCode: "",
+      accessCode: row.accessCode,
       isActive: row.isActive,
       notes: row.notes || undefined,
       createdAt: nowIso,
+    }));
+    const newAccessCodes: AccessCodeRecord[] = newChildren.map((child, index) => ({
+      id: uid("ac"),
+      code: registryImportPreview.validRows[index].accessCode,
+      childId: child.id,
+      registryId: child.registryId,
+      grade: child.grade,
+      classGroup: child.classGroup,
+      status: child.isActive ? "Выдан" : "Недействителен",
+      createdAt: nowIso,
+      updatedAt: nowIso,
     }));
 
     setStore((prev) => ({
       ...prev,
       campaigns: FIXED_CAMPAIGNS,
       children: [...newChildren, ...prev.children],
+      accessCodes: [...newAccessCodes, ...prev.accessCodes],
     }));
-    show("ok", `Импорт завершён: ${newChildren.length} учеников добавлено.`);
+    show("ok", `Импорт завершён: ${newChildren.length} учеников и ${newAccessCodes.length} кодов добавлено.`);
     setRegistryImportPreview(null);
   }
 
@@ -2127,7 +2158,7 @@ export default function Home() {
     const criticalSteps: string[] = [];
     classRows.forEach((row) => {
       if (row.importedStudents > 0 && row.activeCodes === 0) {
-        statusMessages.push(`Для класса ${row.classGroup} коды ещё не сгенерированы.`);
+        statusMessages.push(`Для класса ${row.classGroup} отсутствуют активные импортированные коды доступа.`);
       }
       if (row.pausedSessions > 0) {
         statusMessages.push(`Для класса ${row.classGroup} есть незавершённые попытки.`);
@@ -2823,12 +2854,16 @@ export default function Home() {
                   Откройте режим администратора, проверьте готовность по классам 4А / 4Б / 6А / 6Б и начинайте цикл только после резервной копии.
                 </p>
                 <p className="rounded-md border border-slate-700 bg-slate-900 p-3">
-                  <strong className="block text-white">Как импортировать реестр</strong>
+                  <strong className="block text-white">Импорт реестра с кодами доступа</strong>
                   Загрузите CSV-реестр, проверьте предпросмотр, исправьте ошибки строк и подтвердите импорт.
                 </p>
                 <p className="rounded-md border border-slate-700 bg-slate-900 p-3">
-                  <strong className="block text-white">Как сгенерировать коды</strong>
-                  Сгенерируйте коды для выбранного класса, выгрузите список и передайте коды детям индивидуально.
+                  <strong className="block text-white">Коды задаются администратором вручную вне системы</strong>
+                  Основной путь: подготовить коды заранее, импортировать реестр и выдать детям уже назначенные коды.
+                </p>
+                <p className="rounded-md border border-slate-700 bg-slate-900 p-3">
+                  <strong className="block text-white">Генерация кодов не требуется для основного рабочего процесса</strong>
+                  Дети входят по коду из импортированного реестра, без обязательной генерации в приложении.
                 </p>
                 <p className="rounded-md border border-slate-700 bg-slate-900 p-3">
                   <strong className="block text-white">Как отслеживать прохождение</strong>
@@ -2937,8 +2972,14 @@ export default function Home() {
             <article className={cardClass}>
               <h2 className="mb-3 text-lg font-semibold text-white">Реестр учеников / коды доступа</h2>
               <p className="mb-3 text-sm text-slate-300">
-                Формат импорта (CSV): <code>student_id,class_group,is_active,notes</code>. Excel-формат (.xlsx) зарезервирован для следующего шага.
+                Формат импорта (CSV): <code>student_id,class_group,access_code,is_active,notes</code>. Колонка <code>access_code</code> обязательна.
+                Excel-формат (.xlsx) зарезервирован для следующего шага.
               </p>
+              <div className="mb-3 rounded-md border border-sky-700/70 bg-sky-950/20 p-3 text-xs text-sky-100">
+                <p className="font-semibold">Импорт реестра с кодами доступа</p>
+                <p>Коды задаются администратором вручную вне системы.</p>
+                <p>Генерация кодов не требуется для основного рабочего процесса.</p>
+              </div>
               <div className="mb-3 flex flex-wrap items-center gap-2">
                 <input
                   accept=".csv,.txt,.xlsx,.xls"
@@ -2974,7 +3015,8 @@ export default function Home() {
                       <ul className="space-y-1 p-2 text-xs text-rose-200">
                         {registryImportPreview.invalidRows.map((row) => (
                           <li key={`invalid-${row.rowNumber}`}>
-                            Строка {row.rowNumber}: {row.issues.join("; ")}
+                            Строка {row.rowNumber}: {row.issues.join("; ")} | student_id=«{row.studentIdRaw || "—"}» | class_group=«
+                            {row.classGroupRaw || "—"}» | access_code=«{row.accessCodeRaw || "—"}» | is_active=«{row.isActiveRaw || "—"}»
                           </li>
                         ))}
                       </ul>
@@ -2986,7 +3028,7 @@ export default function Home() {
                       <ul className="space-y-1 p-2 text-xs text-amber-200">
                         {registryImportPreview.duplicateRows.map((row) => (
                           <li key={`dup-${row.rowNumber}`}>
-                            Строка {row.rowNumber}: {row.studentId} ({row.reason})
+                            Строка {row.rowNumber}: {row.field}=«{row.value}» ({row.reason})
                           </li>
                         ))}
                       </ul>
@@ -3020,13 +3062,17 @@ export default function Home() {
                 </label>
               </div>
               <div className="mb-3 flex flex-wrap gap-2">
-                <button className={buttonPrimaryClass} onClick={generateCodesForClass} type="button">
-                  Сгенерировать коды для активных учеников класса
-                </button>
                 <button className={buttonSecondaryClass} onClick={exportCodesByClass} type="button">
                   Экспорт кодов класса (CSV)
                 </button>
               </div>
+              <details className="mb-3 rounded-md border border-amber-700/60 bg-amber-950/20 p-3 text-xs text-amber-100">
+                <summary className="cursor-pointer font-semibold">Легаси-функция (опционально): автоматическая генерация кодов</summary>
+                <p className="mt-2">Используйте только для старых сценариев. Для основного процесса генерация не нужна.</p>
+                <button className={`${buttonSecondaryClass} mt-2`} onClick={generateCodesForClass} type="button">
+                  Сгенерировать коды для активных учеников класса (легаси)
+                </button>
+              </details>
               <div className="max-h-60 overflow-auto rounded-md border border-slate-600">
                 <table className="w-full text-left text-sm text-slate-100">
                   <thead className="bg-slate-800 text-slate-100">
@@ -3051,7 +3097,7 @@ export default function Home() {
                     {!classCodeRows.length && (
                       <tr>
                         <td className="p-2 text-slate-400" colSpan={5}>
-                          Для выбранного класса пока нет выданных кодов.
+                          Для выбранного класса пока нет импортированных кодов.
                         </td>
                       </tr>
                     )}
