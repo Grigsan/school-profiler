@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
+import { FormEvent, RefObject, useEffect, useMemo, useRef, useState } from "react";
 import {
   Bar,
   BarChart,
@@ -686,6 +686,46 @@ function toCsv(rows: string[][]): string {
     .join("\n");
 }
 
+function downloadText(content: string, filename: string, mimeType: string): void {
+  const blob = new Blob([content], { type: mimeType });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename;
+  link.click();
+  URL.revokeObjectURL(url);
+}
+
+function printHtmlReport(title: string, htmlContent: string): boolean {
+  const popup = window.open("", "_blank", "noopener,noreferrer,width=1080,height=900");
+  if (!popup) return false;
+  popup.document.write(`
+    <!doctype html>
+    <html lang="ru">
+      <head>
+        <meta charset="utf-8" />
+        <title>${title}</title>
+        <style>
+          body { font-family: Arial, Helvetica, sans-serif; color: #0f172a; background: #fff; margin: 20px; line-height: 1.4; }
+          h1,h2,h3 { margin: 0 0 10px; color: #0f172a; }
+          table { border-collapse: collapse; width: 100%; margin: 12px 0; }
+          th, td { border: 1px solid #cbd5e1; padding: 8px; vertical-align: top; text-align: left; font-size: 12px; }
+          .print-section { margin-bottom: 20px; }
+          ul { margin: 8px 0 0; }
+        </style>
+      </head>
+      <body>
+        ${htmlContent}
+      </body>
+    </html>
+  `);
+  popup.document.close();
+  popup.focus();
+  popup.print();
+  popup.close();
+  return true;
+}
+
 function adminStatusLabel(session: Session): string {
   if (session.status === "completed") return "завершена и заблокирована";
   if (session.status === "active") return "в процессе";
@@ -798,6 +838,8 @@ export default function Home() {
   );
   const [selectedReportSessionId, setSelectedReportSessionId] = useState<string>("");
   const [selectedAnalyticsClass, setSelectedAnalyticsClass] = useState<ClassGroup>("4А");
+  const individualReportRef = useRef<HTMLDivElement | null>(null);
+  const classSummaryRef = useRef<HTMLDivElement | null>(null);
 
   function show(type: "ok" | "error", text: string): void {
     setMessage({ type, text });
@@ -812,6 +854,21 @@ export default function Home() {
     } catch {
       show("error", "Не удалось скопировать таблицу в буфер обмена.");
     }
+  }
+
+  function printFromRef(ref: RefObject<HTMLDivElement | null>, title: string): void {
+    const html = ref.current?.innerHTML;
+    if (!html) {
+      show("error", "Нет данных для печати.");
+      return;
+    }
+
+    const printed = printHtmlReport(title, `<div class="print-section"><h1>${title}</h1>${html}</div>`);
+    if (!printed) {
+      show("error", "Не удалось открыть окно печати. Проверьте настройки браузера.");
+      return;
+    }
+    show("ok", "Печатная версия открыта.");
   }
 
   function unlockAdmin(e: FormEvent): void {
@@ -1204,6 +1261,52 @@ export default function Home() {
     () => completedSessions.find((session) => session.id === selectedReportSessionId) ?? completedSessions[0],
     [completedSessions, selectedReportSessionId],
   );
+  const selectedReportChild = useMemo(
+    () => (selectedReportSession ? store.children.find((item) => item.id === selectedReportSession.childId) : undefined),
+    [selectedReportSession, store.children],
+  );
+
+  const selectedReportExportRows = useMemo(() => {
+    if (!selectedReportSession) return [];
+    const recommendation = selectedReportSession.adminOverride?.text || selectedReportSession.recommendation;
+    const rows: string[][] = [
+      ["Поле", "Значение"],
+      ["student_id", selectedReportChild?.registryId ?? "—"],
+      ["Класс", selectedReportSession.campaignId],
+      ["Статус сессии", `${adminStatusLabel(selectedReportSession)} (${sessionStatusTechnicalLabel(selectedReportSession.status)})`],
+      ["Дата/время завершения", formatDateTime(selectedReportSession.completedAt)],
+      ["Суммарная длительность", formatDuration(selectedReportSession.scores.reduce((acc, score) => acc + score.durationSec, 0))],
+      [],
+      ["Домен", "Raw", "Scaled", "Длительность", "Краткая интерпретация", "Субнавыковая интерпретация"],
+    ];
+
+    BATTERIES[selectedReportSession.grade].forEach((battery) => {
+      const score = selectedReportSession.scores.find((item) => item.batteryId === battery.id);
+      const notes = subskillDiagnostics(
+        selectedReportSession.grade,
+        selectedReportSession.answers.filter((answer) => answer.batteryId === battery.id),
+        battery.id,
+      );
+      rows.push([
+        battery.shortTitle,
+        `${score?.rawScore ?? 0}% (${score?.correct ?? 0}/${score?.answered ?? 0})`,
+        `${score?.scaledScore ?? 1}/10`,
+        formatDuration(score?.durationSec ?? 0),
+        score?.interpretation ?? "—",
+        notes.length ? notes.join(" ") : "Недостаточно данных для интерпретации.",
+      ]);
+    });
+
+    rows.push(
+      [],
+      ["Итоговая рекомендация", recommendation],
+      [],
+      ["Методологическая пометка", "Результат предварительный."],
+      ["Методологическая пометка", "Носит консультативный характер."],
+      ["Методологическая пометка", "Итоговое решение требует профессионального рассмотрения."],
+    );
+    return rows;
+  }, [selectedReportChild?.registryId, selectedReportSession]);
 
   const classSummaryRows = useMemo<ClassSummaryRow[]>(
     () =>
@@ -1260,6 +1363,25 @@ export default function Home() {
       }),
     [store.children, store.sessions],
   );
+  const selectedClassSummary = useMemo(
+    () => classSummaryRows.find((row) => row.classGroup === selectedAnalyticsClass),
+    [classSummaryRows, selectedAnalyticsClass],
+  );
+  const selectedClassSummaryExportRows = useMemo(() => {
+    if (!selectedClassSummary) return [];
+    return [
+      ["Поле", "Значение"],
+      ["Класс", selectedClassSummary.classGroup],
+      ["Всего учеников", String(selectedClassSummary.totalStudents)],
+      ["Завершили", String(selectedClassSummary.completed)],
+      ["Не завершили", String(selectedClassSummary.notCompleted)],
+      ["На паузе", String(selectedClassSummary.paused)],
+      ["Нужен экспертный разбор", String(selectedClassSummary.expertReviewNeeded)],
+      ["Распределение рекомендаций", selectedClassSummary.recommendationDistribution.map((item) => `${item.label}: ${item.count}`).join(" | ") || "—"],
+      ["Трудные домены", selectedClassSummary.domainDifficultyHighlights.join(" | ")],
+      ["Трудные субнавыки", selectedClassSummary.subskillDifficultyHighlights.join(" | ")],
+    ];
+  }, [selectedClassSummary]);
 
   const selectedClassCompletedSessions = useMemo(
     () => completedSessions.filter((session) => session.campaignId === selectedAnalyticsClass),
@@ -1728,7 +1850,45 @@ export default function Home() {
                     }));
 
                     return (
-                      <div className="space-y-3 rounded-md border border-slate-700 bg-slate-900 p-3">
+                      <div className="space-y-3">
+                        <div className="flex flex-wrap gap-2">
+                          <button
+                            className={buttonSecondaryClass}
+                            onClick={() => {
+                              if (!selectedReportExportRows.length) {
+                                show("error", "Нет данных для экспорта отчёта.");
+                                return;
+                              }
+                              void copyRowsToClipboard(selectedReportExportRows, "Индивидуальный отчёт скопирован (TSV).");
+                            }}
+                            type="button"
+                          >
+                            Копировать отчёт (TSV)
+                          </button>
+                          <button
+                            className={buttonSecondaryClass}
+                            onClick={() => {
+                              if (!selectedReportExportRows.length) {
+                                show("error", "Нет данных для экспорта отчёта.");
+                                return;
+                              }
+                              const content = selectedReportExportRows.map((row) => row.join("\t")).join("\n");
+                              downloadText(content, `otchet-${child?.registryId ?? "uchenik"}-${selectedReportSession.campaignId}.tsv`, "text/tab-separated-values;charset=utf-8");
+                              show("ok", "Индивидуальный отчёт сохранён как TSV.");
+                            }}
+                            type="button"
+                          >
+                            Скачать отчёт (TSV)
+                          </button>
+                          <button
+                            className={buttonSecondaryClass}
+                            onClick={() => printFromRef(individualReportRef, "Индивидуальный отчёт специалиста")}
+                            type="button"
+                          >
+                            Печатная версия
+                          </button>
+                        </div>
+                        <div ref={individualReportRef} className="space-y-3 rounded-md border border-slate-700 bg-slate-900 p-3">
                         <dl className="grid gap-2 text-sm md:grid-cols-2">
                           <div><dt className="text-slate-400">ID ученика (student_id)</dt><dd className="font-semibold">{child?.registryId ?? "—"}</dd></div>
                           <div><dt className="text-slate-400">Класс</dt><dd className="font-semibold">{selectedReportSession.campaignId}</dd></div>
@@ -1875,6 +2035,7 @@ export default function Home() {
                           ))}
                         </div>
                       </div>
+                      </div>
                     );
                   })()}
                 </>
@@ -2017,7 +2178,52 @@ export default function Home() {
                   </select>
                 </label>
               </div>
-              <div className="space-y-3 text-sm">
+              <div className="mb-3 flex flex-wrap gap-2">
+                <button
+                  className={buttonSecondaryClass}
+                  onClick={() => {
+                    if (!selectedClassSummaryExportRows.length) {
+                      show("error", "Нет данных для экспорта рабочей сводки класса.");
+                      return;
+                    }
+                    void copyRowsToClipboard(selectedClassSummaryExportRows, `Рабочая сводка ${selectedAnalyticsClass} скопирована (TSV).`);
+                  }}
+                  type="button"
+                >
+                  Копировать сводку класса (TSV)
+                </button>
+                <button
+                  className={buttonSecondaryClass}
+                  onClick={() => {
+                    if (!selectedClassSummaryExportRows.length) {
+                      show("error", "Нет данных для экспорта рабочей сводки класса.");
+                      return;
+                    }
+                    const content = selectedClassSummaryExportRows.map((row) => row.join("\t")).join("\n");
+                    downloadText(content, `rabochaya-svodka-${selectedAnalyticsClass}.tsv`, "text/tab-separated-values;charset=utf-8");
+                    show("ok", `Рабочая сводка ${selectedAnalyticsClass} сохранена как TSV.`);
+                  }}
+                  type="button"
+                >
+                  Скачать сводку класса (TSV)
+                </button>
+                <button
+                  className={buttonSecondaryClass}
+                  onClick={() => printFromRef(classSummaryRef, `Рабочая сводка класса ${selectedAnalyticsClass}`)}
+                  type="button"
+                >
+                  Печатная версия сводки
+                </button>
+              </div>
+              <div ref={classSummaryRef} className="space-y-3 text-sm">
+                {selectedClassSummary && (
+                  <div className="rounded-md border border-indigo-700/60 bg-indigo-950/20 p-3">
+                    <p className="font-semibold text-indigo-100">Рабочая сводка класса {selectedClassSummary.classGroup}</p>
+                    <p className="mt-1 text-xs text-indigo-200">
+                      Для печати/экспорта: количество учеников, статус прохождения, экспертный риск, распределение рекомендаций, зоны трудностей по доменам и субнавыкам.
+                    </p>
+                  </div>
+                )}
                 {classSummaryRows.map((row) => (
                   <div key={row.classGroup} className="rounded-md border border-slate-700 bg-slate-900 p-3">
                     <p className="font-semibold text-slate-100">Класс {row.classGroup}</p>
@@ -2058,7 +2264,6 @@ export default function Home() {
                     </div>
                   </div>
                 ))}
-              </div>
               <div className="mt-4 rounded-md border border-slate-700 bg-slate-950/70 p-3">
                 <p className="text-sm font-semibold text-slate-100">Графики сводки по классу</p>
                 <p className="mt-1 text-xs text-slate-300">
@@ -2167,6 +2372,7 @@ export default function Home() {
                     </ResponsiveContainer>
                   </div>
                 </div>
+              </div>
               </div>
             </article>
 
