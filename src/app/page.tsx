@@ -105,6 +105,7 @@ type ClassSummaryRow = {
   expertReviewNeeded: number;
   recommendationDistribution: Array<{ label: string; count: number }>;
   domainDifficultyHighlights: string[];
+  subskillDifficultyHighlights: string[];
 };
 
 type RecommendationCategory = "более сильный профиль" | "базовый / поддерживающий маршрут" | "требуется экспертная проверка";
@@ -1224,6 +1225,21 @@ export default function Home() {
         });
         const hardest = avgScaledByDomain.filter((item) => item.avg > 0).sort((a, b) => a.avg - b.avg).slice(0, 2);
 
+        const subskillGrouped = new Map<string, number[]>();
+        completed.forEach((session) => {
+          getSubskillStats(session).forEach((item) => {
+            const key = `${item.domain}::${item.label}`;
+            subskillGrouped.set(key, [...(subskillGrouped.get(key) ?? []), item.accuracyPct]);
+          });
+        });
+        const hardestSubskills = [...subskillGrouped.entries()]
+          .map(([key, values]) => {
+            const [domain, label] = key.split("::");
+            return { domain, label, mean: average(values) };
+          })
+          .sort((a, b) => a.mean - b.mean)
+          .slice(0, 3);
+
         return {
           classGroup: group,
           totalStudents: classChildren.length,
@@ -1237,6 +1253,9 @@ export default function Home() {
           domainDifficultyHighlights: hardest.length
             ? hardest.map((item) => `${item.title}: средний scaled ${item.avg.toFixed(1)}/10`)
             : ["Недостаточно завершённых сессий для оценки."],
+          subskillDifficultyHighlights: hardestSubskills.length
+            ? hardestSubskills.map((item) => `${item.domain} — ${item.label}: средняя точность ${item.mean.toFixed(1)}%`)
+            : ["Недостаточно данных по субнавыкам."],
         };
       }),
     [store.children, store.sessions],
@@ -1289,6 +1308,7 @@ export default function Home() {
         "Нужен экспертный разбор",
         "Распределение рекомендаций",
         "Трудные домены",
+        "Трудные субнавыки",
       ],
       ...classSummaryRows.map((row) => [
         row.classGroup,
@@ -1299,6 +1319,7 @@ export default function Home() {
         String(row.expertReviewNeeded),
         row.recommendationDistribution.map((item) => `${item.label}: ${item.count}`).join(" | ") || "—",
         row.domainDifficultyHighlights.join(" | "),
+        row.subskillDifficultyHighlights.join(" | "),
       ]),
     ];
   }, [classSummaryRows]);
@@ -2027,6 +2048,14 @@ export default function Home() {
                         ))}
                       </ul>
                     </div>
+                    <div className="mt-2">
+                      <p className="font-medium text-slate-200">Подсветка трудных субнавыков:</p>
+                      <ul className="list-disc pl-5 text-slate-300">
+                        {row.subskillDifficultyHighlights.map((item, idx) => (
+                          <li key={`${row.classGroup}-subhard-${idx}`}>{item}</li>
+                        ))}
+                      </ul>
+                    </div>
                   </div>
                 ))}
               </div>
@@ -2345,6 +2374,7 @@ export default function Home() {
                       <th className="p-2">Нужен экспертный разбор</th>
                       <th className="p-2">Распределение рекомендаций</th>
                       <th className="p-2">Трудные домены</th>
+                      <th className="p-2">Трудные субнавыки</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -2358,6 +2388,7 @@ export default function Home() {
                         <td className="p-2">{row.expertReviewNeeded}</td>
                         <td className="p-2">{row.recommendationDistribution.map((item) => `${item.label}: ${item.count}`).join(" | ") || "—"}</td>
                         <td className="p-2">{row.domainDifficultyHighlights.join(" | ")}</td>
+                        <td className="p-2">{row.subskillDifficultyHighlights.join(" | ")}</td>
                       </tr>
                     ))}
                   </tbody>
