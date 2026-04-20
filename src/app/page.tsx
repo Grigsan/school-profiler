@@ -162,6 +162,8 @@ type BackupImportPreview = {
   completedSessionsCount: number;
 };
 
+type BackupValidationResult = { ok: true } | { ok: false; error: string };
+
 type ParsedRegistryRow = {
   rowNumber: number;
   studentId: string;
@@ -775,8 +777,22 @@ function parseBackupPayload(raw: unknown): { ok: true; preview: BackupImportPrev
   if (!Array.isArray(raw.data.children) || !Array.isArray(raw.data.accessCodes) || !Array.isArray(raw.data.sessions)) {
     return { ok: false, error: "В блоке data отсутствуют обязательные массивы children/accessCodes/sessions." };
   }
+  if (typeof raw.appStorageKey !== "string" || !raw.appStorageKey.trim()) {
+    return { ok: false, error: "В резервной копии отсутствует appStorageKey." };
+  }
   if (raw.backupFormatVersion === "1.1.0" && !isRecord(raw.metadata)) {
     return { ok: false, error: "В резервной копии версии 1.1.0 отсутствует блок metadata." };
+  }
+
+  const dataValidation = validateBackupData(raw.data);
+  if (!dataValidation.ok) {
+    return dataValidation;
+  }
+  if (raw.backupFormatVersion === "1.1.0") {
+    const metadataValidation = validateBackupMetadata(raw.metadata as Record<string, unknown>);
+    if (!metadataValidation.ok) {
+      return metadataValidation;
+    }
   }
 
   try {
@@ -800,6 +816,49 @@ function parseBackupPayload(raw: unknown): { ok: true; preview: BackupImportPrev
   } catch {
     return { ok: false, error: "Структура data не прошла проверку и нормализацию." };
   }
+}
+
+function validateBackupMetadata(metadata: Record<string, unknown>): BackupValidationResult {
+  const requiredStringFields: Array<keyof BackupMetadata> = ["storageKey", "appVersion"];
+  for (const field of requiredStringFields) {
+    if (typeof metadata[field] !== "string" || !String(metadata[field]).trim()) {
+      return { ok: false, error: `В metadata отсутствует корректное поле ${String(field)}.` };
+    }
+  }
+
+  if (!Array.isArray(metadata.classes) || metadata.classes.some((classGroup) => !isClassGroup(classGroup))) {
+    return { ok: false, error: "В metadata поле classes заполнено некорректно." };
+  }
+
+  const requiredNumberFields: Array<keyof BackupMetadata> = [
+    "childrenCount",
+    "accessCodesCount",
+    "sessionsCount",
+    "completedSessionsCount",
+    "recommendationsCount",
+    "overridesCount",
+  ];
+  for (const field of requiredNumberFields) {
+    if (typeof metadata[field] !== "number" || Number.isNaN(metadata[field])) {
+      return { ok: false, error: `В metadata отсутствует корректное поле ${String(field)}.` };
+    }
+  }
+
+  return { ok: true };
+}
+
+function validateBackupData(data: Record<string, unknown>): BackupValidationResult {
+  const requiredArrays = ["children", "accessCodes", "sessions"] as const;
+  for (const field of requiredArrays) {
+    if (!Array.isArray(data[field])) {
+      return { ok: false, error: `В блоке data отсутствует обязательный массив ${field}.` };
+    }
+    if ((data[field] as unknown[]).some((item) => !isRecord(item))) {
+      return { ok: false, error: `В блоке data массив ${field} содержит некорректные элементы.` };
+    }
+  }
+
+  return { ok: true };
 }
 
 function toCsv(rows: string[][]): string {
@@ -1101,6 +1160,11 @@ export default function Home() {
   }
 
   async function handleBackupFileImport(file: File): Promise<void> {
+    if (!adminUnlocked) {
+      show("error", "Восстановление из резервной копии доступно только администратору.");
+      return;
+    }
+
     setIsImportingBackup(true);
     try {
       const content = await file.text();
@@ -1131,6 +1195,11 @@ export default function Home() {
   }
 
   function confirmBackupRestore(): void {
+    if (!adminUnlocked) {
+      show("error", "Восстановление из резервной копии доступно только администратору.");
+      return;
+    }
+
     if (!backupImportPreview) {
       show("error", "Нет загруженной резервной копии для восстановления.");
       return;
