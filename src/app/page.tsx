@@ -169,6 +169,7 @@ type ClassDecisionRow = {
   child: Child;
   session?: Session;
   completionStatus: DecisionCompletionStatus;
+  hasCompletedSession: boolean;
   systemRecommendation: string;
   expertReviewNeeded: boolean;
   attemptQualityStatus: AttemptQualityStatus | "—";
@@ -2235,18 +2236,20 @@ export default function Home() {
             : session.status === "paused"
               ? "paused"
               : "not_completed";
-        const quality = session?.status === "completed" ? session.quality ?? computeAttemptQuality(session) : undefined;
+        const hasCompletedSession = session?.status === "completed";
+        const quality = hasCompletedSession ? session.quality ?? computeAttemptQuality(session) : undefined;
         return {
           child,
           session,
           completionStatus,
-          systemRecommendation: session?.status === "completed" ? session.recommendation : "—",
-          expertReviewNeeded: session?.status === "completed" ? needsExpertReview(session) : false,
+          hasCompletedSession,
+          systemRecommendation: hasCompletedSession ? session.recommendation : "—",
+          expertReviewNeeded: hasCompletedSession ? needsExpertReview(session) : false,
           attemptQualityStatus: (quality?.status ?? "—") as AttemptQualityStatus | "—",
-          finalDecision: (session?.specialistFinalDecision ?? "—") as SpecialistFinalDecision | "—",
-          reviewStatus: session?.reviewStatus ?? "не рассмотрен",
-          specialistComment: session?.specialistComment?.trim() || "—",
-          completedAt: session?.completedAt,
+          finalDecision: (hasCompletedSession ? session?.specialistFinalDecision ?? "—" : "—") as SpecialistFinalDecision | "—",
+          reviewStatus: hasCompletedSession ? session?.reviewStatus ?? "не рассмотрен" : "не рассмотрен",
+          specialistComment: hasCompletedSession ? session?.specialistComment?.trim() || "—" : "—",
+          completedAt: hasCompletedSession ? session?.completedAt : undefined,
         };
       })
       .sort((a, b) => a.child.registryId.localeCompare(b.child.registryId, "ru"));
@@ -2325,9 +2328,9 @@ export default function Home() {
         row.systemRecommendation,
         row.expertReviewNeeded ? "да" : "нет",
         row.attemptQualityStatus,
-        row.finalDecision,
-        row.reviewStatus,
-        row.specialistComment,
+        row.hasCompletedSession ? row.finalDecision : "—",
+        row.hasCompletedSession ? row.reviewStatus : "—",
+        row.hasCompletedSession ? row.specialistComment : "—",
         formatDateTime(row.completedAt),
       ]),
     ];
@@ -3192,6 +3195,45 @@ export default function Home() {
                       <p className="mb-1 text-xs text-cyan-200">Качество попытки: {quality.status}</p>
                       <p className="mb-2 text-xs text-cyan-100">{quality.explanation}</p>
                       <p className="mb-3 text-sm text-slate-100">Итоговая рекомендация: {recommendation || "—"}</p>
+                      <div className="mb-3 grid gap-2 rounded-md border border-slate-700 bg-slate-950/60 p-3 text-xs text-slate-200 md:grid-cols-2">
+                        <p>Системная рекомендация: <strong>{session.recommendation || "—"}</strong></p>
+                        <p>Нужен экспертный разбор: <strong>{needsExpertReview(session) ? "да" : "нет"}</strong></p>
+                        <p>Качество попытки: <strong>{quality.status}</strong></p>
+                        <label className="block">
+                          Финальное решение специалиста
+                          <select
+                            className="mt-1 w-full rounded-md border border-slate-600 bg-slate-900 p-1"
+                            value={session.specialistFinalDecision ?? ""}
+                            onChange={(e) => updateSpecialistDecision(session.id, e.target.value as SpecialistFinalDecision | "")}
+                          >
+                            <option value="">—</option>
+                            {SPECIALIST_FINAL_DECISIONS.map((item) => (
+                              <option key={`completed-session-decision-${session.id}-${item}`} value={item}>{item}</option>
+                            ))}
+                          </select>
+                        </label>
+                        <label className="block">
+                          Статус рассмотрения
+                          <select
+                            className="mt-1 w-full rounded-md border border-slate-600 bg-slate-900 p-1"
+                            value={session.reviewStatus ?? "не рассмотрен"}
+                            onChange={(e) => updateSpecialistReviewStatus(session.id, e.target.value as SpecialistReviewStatus)}
+                          >
+                            {SPECIALIST_REVIEW_STATUSES.map((item) => (
+                              <option key={`completed-session-status-${session.id}-${item}`} value={item}>{item}</option>
+                            ))}
+                          </select>
+                        </label>
+                        <label className="block md:col-span-2">
+                          Комментарий специалиста
+                          <textarea
+                            className="mt-1 h-20 w-full rounded-md border border-slate-600 bg-slate-900 p-1"
+                            value={session.specialistComment ?? ""}
+                            onChange={(e) => updateSpecialistComment(session.id, e.target.value)}
+                            placeholder="Комментарий специалиста"
+                          />
+                        </label>
+                      </div>
 
                       <div className="mb-3 overflow-x-auto rounded-md border border-slate-700">
                         <table className="w-full text-left text-xs text-slate-100 md:text-sm">
@@ -3760,7 +3802,7 @@ export default function Home() {
                         <td className="p-2">{row.expertReviewNeeded ? "да" : "нет"}</td>
                         <td className="p-2">{row.attemptQualityStatus}</td>
                         <td className="p-2">
-                          {row.session ? (
+                          {row.hasCompletedSession && row.session ? (
                             <select
                               className="w-64 rounded-md border border-slate-600 bg-slate-900 p-1"
                               value={row.session.specialistFinalDecision ?? ""}
@@ -3774,7 +3816,7 @@ export default function Home() {
                           ) : "—"}
                         </td>
                         <td className="p-2">
-                          {row.session ? (
+                          {row.hasCompletedSession && row.session ? (
                             <select
                               className="w-40 rounded-md border border-slate-600 bg-slate-900 p-1"
                               value={row.session.reviewStatus ?? "не рассмотрен"}
@@ -3784,10 +3826,10 @@ export default function Home() {
                                 <option key={`status-${row.session!.id}-${item}`} value={item}>{item}</option>
                               ))}
                             </select>
-                          ) : "не рассмотрен"}
+                          ) : "—"}
                         </td>
                         <td className="p-2">
-                          {row.session ? (
+                          {row.hasCompletedSession && row.session ? (
                             <textarea
                               className="h-20 w-72 rounded-md border border-slate-600 bg-slate-900 p-1"
                               value={row.session.specialistComment ?? ""}
