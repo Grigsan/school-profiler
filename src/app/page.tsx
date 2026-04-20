@@ -174,7 +174,7 @@ type ClassDecisionRow = {
   expertReviewNeeded: boolean;
   attemptQualityStatus: AttemptQualityStatus | "—";
   finalDecision: SpecialistFinalDecision | "—";
-  reviewStatus: SpecialistReviewStatus;
+  reviewStatus: SpecialistReviewStatus | "—";
   specialistComment: string;
   completedAt?: string;
 };
@@ -2298,6 +2298,7 @@ export default function Home() {
               : "not_completed";
         const hasCompletedSession = session?.status === "completed";
         const quality = hasCompletedSession ? session.quality ?? computeAttemptQuality(session) : undefined;
+        const reviewStatus: SpecialistReviewStatus | "—" = hasCompletedSession ? (session?.reviewStatus ?? "не рассмотрен") : "—";
         return {
           child,
           session,
@@ -2307,7 +2308,7 @@ export default function Home() {
           expertReviewNeeded: hasCompletedSession ? needsExpertReview(session) : false,
           attemptQualityStatus: (quality?.status ?? "—") as AttemptQualityStatus | "—",
           finalDecision: (hasCompletedSession ? session?.specialistFinalDecision ?? "—" : "—") as SpecialistFinalDecision | "—",
-          reviewStatus: hasCompletedSession ? session?.reviewStatus ?? "не рассмотрен" : "не рассмотрен",
+          reviewStatus,
           specialistComment: hasCompletedSession ? session?.specialistComment?.trim() || "—" : "—",
           completedAt: hasCompletedSession ? session?.completedAt : undefined,
         };
@@ -2318,17 +2319,19 @@ export default function Home() {
   const filteredDecisionRows = useMemo(() => {
     const byCompletion = (row: ClassDecisionRow): boolean => decisionFilterCompletion === "все" || row.completionStatus === decisionFilterCompletion;
     const byFinal = (row: ClassDecisionRow): boolean => decisionFilterFinal === "все" || row.finalDecision === decisionFilterFinal;
-    const byReview = (row: ClassDecisionRow): boolean => decisionFilterReviewStatus === "все" || row.reviewStatus === decisionFilterReviewStatus;
+    const byReview = (row: ClassDecisionRow): boolean =>
+      decisionFilterReviewStatus === "все" || (row.hasCompletedSession && row.reviewStatus === decisionFilterReviewStatus);
     const byExpert = (row: ClassDecisionRow): boolean =>
       decisionFilterExpertNeeded === "все" ||
       (decisionFilterExpertNeeded === "требуется" ? row.expertReviewNeeded : !row.expertReviewNeeded);
     const byQuality = (row: ClassDecisionRow): boolean => decisionFilterQuality === "все" || row.attemptQualityStatus === decisionFilterQuality;
     const completionOrder: Record<DecisionCompletionStatus, number> = { completed: 0, paused: 1, not_completed: 2 };
-    const reviewOrder: Record<SpecialistReviewStatus, number> = {
+    const reviewOrder: Record<SpecialistReviewStatus | "—", number> = {
       "не рассмотрен": 0,
       "в работе": 1,
       "требует обсуждения": 2,
       "решение принято": 3,
+      "—": 4,
     };
 
     const filtered = decisionClassRows.filter((row) => byCompletion(row) && byFinal(row) && byReview(row) && byExpert(row) && byQuality(row));
@@ -2350,20 +2353,21 @@ export default function Home() {
 
   const decisionWorkspaceSummary = useMemo(() => {
     const rows = decisionClassRows;
+    const completedRows = rows.filter((row) => row.hasCompletedSession);
     const systemMath = rows.filter((row) => row.systemRecommendation.toLowerCase().includes("расширенный профиль")).length;
     const systemUniversal = rows.filter(
       (row) =>
         row.systemRecommendation !== "—" &&
         (row.systemRecommendation.toLowerCase().includes("базовый") || row.systemRecommendation.toLowerCase().includes("поддерживающий")),
     ).length;
-    const requireDiscussion = rows.filter(
+    const requireDiscussion = completedRows.filter(
       (row) =>
         row.finalDecision === "требуется дополнительное обсуждение" ||
         row.reviewStatus === "требует обсуждения" ||
         row.expertReviewNeeded,
     ).length;
-    const notReviewed = rows.filter((row) => row.reviewStatus === "не рассмотрен").length;
-    const finalized = rows.filter((row) => row.reviewStatus === "решение принято").length;
+    const notReviewed = completedRows.filter((row) => row.reviewStatus === "не рассмотрен").length;
+    const finalized = completedRows.filter((row) => row.reviewStatus === "решение принято").length;
     return { systemMath, systemUniversal, requireDiscussion, notReviewed, finalized };
   }, [decisionClassRows]);
 
