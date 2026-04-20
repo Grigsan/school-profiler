@@ -17,7 +17,7 @@ type Child = {
   createdAt: string;
 };
 
-type AccessCodeStatus = "Выдан" | "Активен" | "Использован" | "Завершён" | "Переоткрыт" | "Сброшен";
+type AccessCodeStatus = "Выдан" | "Активен" | "Использован" | "Завершён" | "Переоткрыт" | "Сброшен" | "Недействителен";
 
 type AccessCodeRecord = {
   id: string;
@@ -409,7 +409,7 @@ function normalizeAccessCodes(rawCodes: unknown, children: Child[]): AccessCodeR
       registryId: fallbackChild.registryId,
       grade: fallbackChild.grade,
       classGroup: fallbackChild.classGroup,
-      status: item.status ?? "Выдан",
+      status: normalizeAccessCodeStatus(item.status),
       createdAt: typeof item.createdAt === "string" ? item.createdAt : fallbackChild.createdAt,
       updatedAt: typeof item.updatedAt === "string" ? item.updatedAt : new Date().toISOString(),
     });
@@ -531,7 +531,18 @@ function maskAccessCode(code: string): string {
   return `${"•".repeat(Math.max(4, code.length - 4))}${code.slice(-4)}`;
 }
 
+function normalizeAccessCodeStatus(status: unknown): AccessCodeStatus {
+  if (status === "Недействителен" || status === "Заблокирован" || status === "Аннулирован") return "Недействителен";
+  if (status === "Выдан" || status === "Активен" || status === "Использован" || status === "Завершён" || status === "Переоткрыт" || status === "Сброшен") {
+    return status;
+  }
+  return "Выдан";
+}
+
 function accessCodeStatus(codeRecord: AccessCodeRecord, sessions: Session[]): AccessCodeStatus {
+  // "Сброшен" означает возможность ретейка, тогда как "Недействителен" означает постоянную блокировку входа.
+  if (codeRecord.status === "Недействителен") return "Недействителен";
+
   const childSessions = sessions.filter((session) => session.childId === codeRecord.childId);
   if (!childSessions.length) return codeRecord.status;
 
@@ -696,8 +707,8 @@ export default function Home() {
       show("error", "Тестирование по этому коду уже завершено.");
       return;
     }
-    if (status === "Сброшен") {
-      show("error", "Код сброшен администратором и недействителен. Обратитесь к администратору.");
+    if (status === "Недействителен") {
+      show("error", "Код недействителен. Обратитесь к администратору.");
       return;
     }
 
