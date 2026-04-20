@@ -2094,10 +2094,12 @@ export default function Home() {
     const completedImportedSessions = importedSessions.filter((session) => session.status === "completed");
     const pausedImportedSessions = importedSessions.filter((session) => session.status === "paused");
     const issuedCodes = store.accessCodes.filter((code) => importedChildrenById.has(code.childId));
+    const activeCodes = issuedCodes.filter((code) => code.status !== "Недействителен");
     const childrenWithSession = new Set(importedSessions.map((session) => session.childId));
     const notStartedCount = importedChildren.filter((child) => !childrenWithSession.has(child.id)).length;
     const pendingReviewCount = completedImportedSessions.filter((session) => session.reviewStatus !== "решение принято").length;
     const finalizedCount = completedImportedSessions.filter((session) => session.reviewStatus === "решение принято").length;
+    const hasBackup = Boolean(lastBackupAt);
 
     const classRows = CLASS_GROUPS.map((group) => {
       const classChildren = importedChildren.filter((child) => child.classGroup === group);
@@ -2119,32 +2121,48 @@ export default function Home() {
       };
     });
 
-    const warnings: string[] = [];
+    const statusMessages: string[] = [];
+    const criticalSteps: string[] = [];
     classRows.forEach((row) => {
       if (row.importedStudents > 0 && row.activeCodes === 0) {
-        warnings.push(`Для класса ${row.classGroup} коды ещё не сгенерированы.`);
+        statusMessages.push(`Для класса ${row.classGroup} коды ещё не сгенерированы.`);
       }
       if (row.pausedSessions > 0) {
-        warnings.push(`Для класса ${row.classGroup} есть незавершённые попытки.`);
+        statusMessages.push(`Для класса ${row.classGroup} есть незавершённые попытки.`);
       }
     });
-    if (pendingReviewCount > 0) warnings.push("Есть результаты без финального решения специалиста.");
-    if (completedImportedSessions.length > 0) warnings.push("Рекомендуется сохранить резервную копию после завершения текущего цикла.");
+    if (!importedChildren.length) criticalSteps.push("Реестр класса не загружен.");
+    if (!activeCodes.length) criticalSteps.push("Нет активных кодов доступа.");
+    if (pausedImportedSessions.length > 0) criticalSteps.push("Остались незавершённые попытки.");
+    if (pendingReviewCount > 0) criticalSteps.push("Не все решения приняты.");
+    if (pendingReviewCount > 0) statusMessages.push("Есть результаты без финального решения специалиста.");
+    if (completedImportedSessions.length > 0 && !hasBackup) statusMessages.push("Рекомендуется сохранить резервную копию.");
+
+    const cycleStatusLines: string[] = [];
+    if (pausedImportedSessions.length > 0) cycleStatusLines.push("Остались незавершённые попытки");
+    if (pendingReviewCount > 0) cycleStatusLines.push("Не все решения приняты");
+    if (completedImportedSessions.length > 0 && !hasBackup) cycleStatusLines.push("Рекомендуется сохранить резервную копию");
+    if (!importedChildren.length || !activeCodes.length) cycleStatusLines.push("Рабочий цикл не завершён");
+    if (!cycleStatusLines.length) cycleStatusLines.push("Цикл можно считать завершённым");
 
     return {
       registryLoaded: importedChildren.length > 0,
       importedChildrenCount: importedChildren.length,
       childrenByClass: classRows,
-      hasCodesGenerated: issuedCodes.length > 0,
+      hasCodesGenerated: activeCodes.length > 0,
       issuedCodesCount: issuedCodes.length,
+      activeCodesCount: activeCodes.length,
       completedSessionsCount: completedImportedSessions.length,
       pausedSessionsCount: pausedImportedSessions.length,
       notStartedCount,
       pendingReviewCount,
       finalizedCount,
-      warnings,
+      hasBackup,
+      criticalSteps,
+      statusMessages,
+      cycleStatusLines,
     };
-  }, [store.accessCodes, store.children, store.sessions]);
+  }, [lastBackupAt, store.accessCodes, store.children, store.sessions]);
 
   const selectedReportSession = useMemo(
     () => completedSessions.find((session) => session.id === selectedReportSessionId) ?? completedSessions[0],
@@ -2789,33 +2807,70 @@ export default function Home() {
             </article>
 
             <article className={`${cardClass} md:col-span-2`}>
-              <h2 className="mb-3 text-lg font-semibold text-white">Как работать с новым циклом тестирования</h2>
+              <h2 className="mb-3 text-lg font-semibold text-white">Контрольный прогон рабочего цикла</h2>
               <ol className="list-decimal space-y-2 pl-5 text-sm text-slate-200">
-                <li>Загрузить реестр.</li>
-                <li>Проверить распределение по классам 4А / 4Б / 6А / 6Б.</li>
-                <li>Сгенерировать коды доступа.</li>
+                <li>Загрузить реестр класса.</li>
+                <li>Проверить состав классов 4А / 4Б / 6А / 6Б.</li>
+                <li>Сгенерировать коды.</li>
                 <li>Сохранить резервную копию.</li>
-                <li>Раздать коды участникам.</li>
-                <li>Отслеживать прохождение.</li>
-                <li>Проверить завершённые и незавершённые попытки.</li>
-                <li>Просмотреть результаты и качество попыток.</li>
+                <li>Провести тестирование.</li>
+                <li>Проверить незавершённые попытки.</li>
+                <li>Просмотреть результаты.</li>
                 <li>Принять финальные решения.</li>
                 <li>Выгрузить итоговые таблицы.</li>
-                <li>Снова сохранить резервную копию.</li>
+                <li>Сохранить резервную копию после завершения цикла.</li>
               </ol>
             </article>
 
             <article className={`${cardClass} md:col-span-2`}>
-              <h2 className="mb-3 text-lg font-semibold text-white">Готовность текущего цикла</h2>
+              <h2 className="mb-3 text-lg font-semibold text-white">Как работать с системой</h2>
+              <div className="grid gap-3 text-sm text-slate-200 md:grid-cols-2">
+                <p className="rounded-md border border-slate-700 bg-slate-900 p-3">
+                  <strong className="block text-white">Как начать новый цикл</strong>
+                  Откройте режим администратора, проверьте актуальность данных и очистите рабочий контекст только при необходимости нового набора.
+                </p>
+                <p className="rounded-md border border-slate-700 bg-slate-900 p-3">
+                  <strong className="block text-white">Как импортировать реестр</strong>
+                  Загрузите CSV-реестр, проверьте предпросмотр, исправьте ошибки строк и подтвердите импорт.
+                </p>
+                <p className="rounded-md border border-slate-700 bg-slate-900 p-3">
+                  <strong className="block text-white">Как выдать коды</strong>
+                  Сгенерируйте коды для выбранного класса, выгрузите список и передайте коды детям индивидуально.
+                </p>
+                <p className="rounded-md border border-slate-700 bg-slate-900 p-3">
+                  <strong className="block text-white">Как дети входят</strong>
+                  На детском экране ребёнок вводит свой код, после чего проходит батареи без повторного входа.
+                </p>
+                <p className="rounded-md border border-slate-700 bg-slate-900 p-3">
+                  <strong className="block text-white">Как отслеживать прохождение</strong>
+                  Контролируйте активные, завершённые и паузные сессии в админ-блоках и своевременно проверяйте незавершённые попытки.
+                </p>
+                <p className="rounded-md border border-slate-700 bg-slate-900 p-3">
+                  <strong className="block text-white">Как работать с результатами</strong>
+                  Просматривайте отчёты по ребёнку, сводки по классу, графики и корреляции до принятия финальных решений.
+                </p>
+                <p className="rounded-md border border-slate-700 bg-slate-900 p-3">
+                  <strong className="block text-white">Как фиксировать финальные решения</strong>
+                  В рабочем пространстве по классам выберите итоговое решение, статус рассмотрения и комментарий специалиста.
+                </p>
+                <p className="rounded-md border border-slate-700 bg-slate-900 p-3">
+                  <strong className="block text-white">Как делать backup / restore</strong>
+                  Регулярно сохраняйте резервную копию до и после цикла; при необходимости восстановите данные из файла через блок backup/restore.
+                </p>
+              </div>
+            </article>
+
+            <article className={`${cardClass} md:col-span-2`}>
+              <h2 className="mb-3 text-lg font-semibold text-white">Готовность и завершение рабочего цикла</h2>
               <div className="grid gap-3 text-sm md:grid-cols-2 xl:grid-cols-3">
                 <p className="rounded-md border border-slate-700 bg-slate-950 p-3">
                   Реестр: <strong>{cycleReadiness.registryLoaded ? "загружен" : "не загружен"}</strong>
                 </p>
                 <p className="rounded-md border border-slate-700 bg-slate-950 p-3">
-                  Коды: <strong>{cycleReadiness.hasCodesGenerated ? "сгенерированы" : "не сгенерированы"}</strong>
+                  Активные коды: <strong>{cycleReadiness.hasCodesGenerated ? "есть" : "нет"}</strong>
                 </p>
                 <p className="rounded-md border border-slate-700 bg-slate-950 p-3">
-                  Выдано кодов: <strong>{cycleReadiness.issuedCodesCount}</strong>
+                  Активных кодов всего: <strong>{cycleReadiness.activeCodesCount}</strong>
                 </p>
                 <p className="rounded-md border border-slate-700 bg-slate-950 p-3">
                   Завершённых сессий: <strong>{cycleReadiness.completedSessionsCount}</strong>
@@ -2827,14 +2882,29 @@ export default function Home() {
                   Ещё не начато: <strong>{cycleReadiness.notStartedCount}</strong>
                 </p>
                 <p className="rounded-md border border-slate-700 bg-slate-950 p-3">
-                  Решений не рассмотрено: <strong>{cycleReadiness.pendingReviewCount}</strong>
+                  Решений ещё не принято: <strong>{cycleReadiness.pendingReviewCount}</strong>
                 </p>
                 <p className="rounded-md border border-slate-700 bg-slate-950 p-3">
                   Решений финализировано: <strong>{cycleReadiness.finalizedCount}</strong>
                 </p>
                 <p className="rounded-md border border-slate-700 bg-slate-950 p-3">
+                  Резервная копия: <strong>{cycleReadiness.hasBackup ? "сохранена" : "не сохранена"}</strong>
+                </p>
+                <p className="rounded-md border border-slate-700 bg-slate-950 p-3">
+                  Критические незавершённые шаги: <strong>{cycleReadiness.criticalSteps.length}</strong>
+                </p>
+                <p className="rounded-md border border-slate-700 bg-slate-950 p-3">
                   Последняя резервная копия: <strong>{formatDateTime(lastBackupAt ?? undefined)}</strong>
                 </p>
+              </div>
+
+              <div className="mt-4 rounded-md border border-emerald-700/60 bg-emerald-950/20 p-3 text-sm text-emerald-100">
+                <p className="mb-2 font-semibold text-emerald-50">Статус цикла (готов / не готов)</p>
+                <ul className="list-disc space-y-1 pl-5">
+                  {cycleReadiness.cycleStatusLines.map((line, index) => (
+                    <li key={`cycle-status-${index}`}>{line}</li>
+                  ))}
+                </ul>
               </div>
 
               <div className="mt-3 grid gap-2 text-xs text-slate-200">
@@ -2864,11 +2934,11 @@ export default function Home() {
                 </div>
               </div>
 
-              {cycleReadiness.warnings.length > 0 && (
+              {cycleReadiness.statusMessages.length > 0 && (
                 <div className="mt-4 rounded-md border border-amber-600/60 bg-amber-950/20 p-3 text-sm text-amber-100">
                   <p className="mb-2 font-semibold">Предупреждения по рабочему циклу</p>
                   <ul className="list-disc space-y-1 pl-5">
-                    {cycleReadiness.warnings.map((warning, index) => (
+                    {cycleReadiness.statusMessages.map((warning, index) => (
                       <li key={`cycle-warning-${index}`}>{warning}</li>
                     ))}
                   </ul>
