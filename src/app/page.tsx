@@ -75,6 +75,32 @@ type SessionAnswer = {
   answeredAt: string;
 };
 
+type PauseEvent = {
+  startedAt: string;
+  resumedAt?: string;
+};
+
+type AttemptQualityStatus =
+  | "Надёжная попытка"
+  | "Допустимая попытка"
+  | "Требует осторожной интерпретации"
+  | "Сомнительное качество прохождения";
+
+type AttemptQuality = {
+  status: AttemptQualityStatus;
+  explanation: string;
+  flags: string[];
+  totalCompletionSec: number;
+  domainCompletionSec: Array<{ batteryId: string; seconds: number }>;
+  pauseCount: number;
+  pauseDurationSec: number;
+  veryFastAnswerRisk: boolean;
+  uniformAnsweringRisk: boolean;
+  irregularProgressionMarker: boolean;
+  unusualTimingPattern: boolean;
+  highInterruptionBurden: boolean;
+};
+
 type RecommendationOverride = {
   text: string;
   by: string;
@@ -92,6 +118,8 @@ type Session = {
   completedAt?: string;
   scores: SessionScore[];
   answers: SessionAnswer[];
+  pauseEvents?: PauseEvent[];
+  quality?: AttemptQuality;
   currentQuestionIndex: number;
   recommendation: string;
   adminOverride?: RecommendationOverride;
@@ -105,6 +133,10 @@ type ClassSummaryRow = {
   notCompleted: number;
   paused: number;
   expertReviewNeeded: number;
+  qualityHigh: number;
+  qualityCaution: number;
+  qualityDoubtful: number;
+  qualityDistribution: Array<{ label: string; count: number }>;
   recommendationDistribution: Array<{ label: string; count: number }>;
   domainDifficultyHighlights: string[];
   subskillDifficultyHighlights: string[];
@@ -520,6 +552,114 @@ function formatDuration(totalSeconds: number): string {
   return `${minutes} мин ${seconds.toString().padStart(2, "0")} сек`;
 }
 
+function finalizePauseEvents(events: PauseEvent[] | undefined, fallbackResumeAt: string): PauseEvent[] {
+  return (events ?? []).map((event) => ({
+    ...event,
+    resumedAt: event.resumedAt ?? fallbackResumeAt,
+  }));
+}
+
+function computeAttemptQuality(session: Pick<Session, "grade" | "startedAt" | "completedAt" | "answers" | "scores" | "pauseEvents">): AttemptQuality {
+  const sortedAnswers = [...session.answers].sort((a, b) => toTimestamp(a.answeredAt) - toTimestamp(b.answeredAt));
+  const completedAt = session.completedAt ?? new Date().toISOString();
+  const totalCompletionSec = clamp(Math.round((toTimestamp(completedAt) - toTimestamp(session.startedAt)) / 1000), 15, 21600);
+  const domainCompletionSec = BATTERIES[session.grade].map((battery) => ({
+    batteryId: battery.id,
+    seconds: session.scores.find((score) => score.batteryId === battery.id)?.durationSec ?? 0,
+  }));
+
+  const resolvedPauses = finalizePauseEvents(session.pauseEvents, completedAt);
+  const pauseDurationSec = resolvedPauses.reduce(
+    (acc, item) => acc + Math.max(0, Math.round((toTimestamp(item.resumedAt) - toTimestamp(item.startedAt)) / 1000)),
+    0,
+  );
+  const pauseCount = resolvedPauses.length;
+
+  const answerDiffsSec = sortedAnswers
+    .slice(1)
+    .map((answer, index) => Math.max(1, Math.round((toTimestamp(answer.answeredAt) - toTimestamp(sortedAnswers[index].answeredAt)) / 1000)));
+  const medianDiff = answerDiffsSec.length
+    ? [...answerDiffsSec].sort((a, b) => a - b)[Math.floor(answerDiffsSec.length / 2)]
+    : 0;
+  const fastRatio = answerDiffsSec.length ? answerDiffsSec.filter((value) => value <= 3).length / answerDiffsSec.length : 0;
+  const veryFastAnswerRisk = sortedAnswers.length > 8 && (totalCompletionSec < sortedAnswers.length * 6 || fastRatio >= 0.35 || medianDiff <= 4);
+
+  const choiceCounter = new Map<number, number>();
+  let longestChoiceStreak = 1;
+  let currentStreak = 1;
+  for (let i = 0; i < sortedAnswers.length; i += 1) {
+    const choice = sortedAnswers[i].choiceIndex;
+    choiceCounter.set(choice, (choiceCounter.get(choice) ?? 0) + 1);
+    if (i > 0 && sortedAnswers[i - 1].choiceIndex === choice) {
+      currentStreak += 1;
+      longestChoiceStreak = Math.max(longestChoiceStreak, currentStreak);
+    } else {
+      currentStreak = 1;
+    }
+  }
+  const topChoiceShare = sortedAnswers.length ? Math.max(...choiceCounter.values()) / sortedAnswers.length : 0;
+  const uniformAnsweringRisk = sortedAnswers.length >= 10 && (longestChoiceStreak >= 6 || topChoiceShare >= 0.7);
+
+  const hasDuplicateAnswers = new Set(sortedAnswers.map((answer) => answer.questionId)).size !== sortedAnswers.length;
+  const hasBackwardTime = sortedAnswers.some((answer, index) => index > 0 && toTimestamp(answer.answeredAt) < toTimestamp(sortedAnswers[index - 1].answeredAt));
+  const batteryCoverage = new Set(sortedAnswers.map((answer) => answer.batteryId));
+  const irregularProgressionMarker =
+    hasDuplicateAnswers || hasBackwardTime || batteryCoverage.size < BATTERIES[session.grade].length || sortedAnswers.length < QUESTION_SETS[session.grade].length;
+
+  const meanDiff = average(answerDiffsSec);
+  const diffVariance = answerDiffsSec.length
+    ? answerDiffsSec.reduce((acc, value) => acc + (value - meanDiff) ** 2, 0) / answerDiffsSec.length
+    : 0;
+  const diffStd = Math.sqrt(diffVariance);
+  const timingCv = meanDiff > 0 ? diffStd / meanDiff : 0;
+  const longGapRatio = answerDiffsSec.length ? answerDiffsSec.filter((value) => value >= 45).length / answerDiffsSec.length : 0;
+  const unusualTimingPattern = answerDiffsSec.length >= 6 && (timingCv >= 1.35 || longGapRatio >= 0.2);
+
+  const interruptionRatio = totalCompletionSec > 0 ? pauseDurationSec / totalCompletionSec : 0;
+  const highInterruptionBurden = pauseCount >= 4 || pauseDurationSec >= 600 || interruptionRatio >= 0.3;
+
+  const flags: string[] = [];
+  if (veryFastAnswerRisk) flags.push("Повышенный риск слишком быстрого прохождения.");
+  if (uniformAnsweringRisk) flags.push("Ответы выглядят чрезмерно однотипными.");
+  if (irregularProgressionMarker) flags.push("Отмечены неполные или нерегулярные маркеры прохождения.");
+  if (unusualTimingPattern) flags.push("Наблюдается необычный паттерн времени ответов.");
+  if (highInterruptionBurden) flags.push("Высокая нагрузка паузами/прерываниями.");
+
+  const riskScore = [veryFastAnswerRisk, uniformAnsweringRisk, irregularProgressionMarker, unusualTimingPattern, highInterruptionBurden].filter(Boolean)
+    .length;
+  const status: AttemptQualityStatus =
+    riskScore === 0
+      ? "Надёжная попытка"
+      : riskScore === 1
+        ? "Допустимая попытка"
+        : riskScore <= 3
+          ? "Требует осторожной интерпретации"
+          : "Сомнительное качество прохождения";
+  const explanation =
+    status === "Надёжная попытка"
+      ? "Попытка выглядит достаточно надёжной для предварительной интерпретации."
+      : status === "Допустимая попытка"
+        ? "Есть отдельные маркеры внимания, но данные обычно пригодны для предварительного анализа."
+        : status === "Требует осторожной интерпретации"
+          ? "Прохождение содержит несколько маркеров нестабильности, интерпретация требует осторожности."
+          : "Выражены множественные маркеры нестабильного прохождения; результаты лучше трактовать с повышенной осторожностью.";
+
+  return {
+    status,
+    explanation,
+    flags,
+    totalCompletionSec,
+    domainCompletionSec,
+    pauseCount,
+    pauseDurationSec,
+    veryFastAnswerRisk,
+    uniformAnsweringRisk,
+    irregularProgressionMarker,
+    unusualTimingPattern,
+    highInterruptionBurden,
+  };
+}
+
 function recommendationBucket(text: string): string {
   const normalized = text.toLowerCase();
   if (normalized.includes("расширенный профиль")) return "Расширенный профиль";
@@ -713,6 +853,21 @@ function normalizeStore(raw: Store): Store {
     const normalizedAnswers = normalizeAnswers(resolvedGrade, session.answers);
     const totalQuestions = QUESTION_SETS[resolvedGrade].length;
     const scores = computeScoresFromAnswers(resolvedGrade, normalizedAnswers, session.startedAt);
+    const pauseEvents = asArray<PauseEvent>((session as Partial<Session>).pauseEvents).filter(
+      (item) => typeof item?.startedAt === "string",
+    );
+    const completedAt = typeof session.completedAt === "string" ? session.completedAt : undefined;
+    const quality =
+      session.status === "completed"
+        ? computeAttemptQuality({
+            grade: resolvedGrade,
+            startedAt: session.startedAt,
+            completedAt,
+            answers: normalizedAnswers,
+            scores,
+            pauseEvents,
+          })
+        : undefined;
 
     return {
       ...session,
@@ -720,6 +875,8 @@ function normalizeStore(raw: Store): Store {
       grade: resolvedGrade,
       answers: normalizedAnswers,
       scores,
+      pauseEvents,
+      quality,
       recommendation: computeRecommendation(resolvedGrade, scores),
       currentQuestionIndex: clamp(session.currentQuestionIndex ?? normalizedAnswers.length, 0, totalQuestions),
       adminState: session.adminState ?? "default",
@@ -1522,6 +1679,9 @@ export default function Home() {
                 ...session,
                 status: "active",
                 pausedAt: undefined,
+                pauseEvents: (session.pauseEvents ?? []).map((event) =>
+                  event.resumedAt ? event : { ...event, resumedAt: new Date().toISOString() },
+                ),
                 currentQuestionIndex: clamp(session.currentQuestionIndex, 0, totalQuestions),
               }
             : session,
@@ -1540,6 +1700,7 @@ export default function Home() {
       status: "active",
       startedAt: new Date().toISOString(),
       answers: [],
+      pauseEvents: [],
       currentQuestionIndex: 0,
       scores: zeroScores,
       recommendation: computeRecommendation(child.grade, zeroScores),
@@ -1595,6 +1756,9 @@ export default function Home() {
           ...session,
           status: "active",
           pausedAt: undefined,
+          pauseEvents: (session.pauseEvents ?? []).map((event) =>
+            event.resumedAt ? event : { ...event, resumedAt: new Date().toISOString() },
+          ),
           answers: nextAnswers,
           currentQuestionIndex: clamp(session.currentQuestionIndex + 1, 0, questions.length),
           scores: nextScores,
@@ -1605,11 +1769,20 @@ export default function Home() {
   }
 
   function pauseSession(sessionId: string): void {
+    const pausedAt = new Date().toISOString();
     setStore((prev) => ({
       ...prev,
       sessions: prev.sessions.map((session) =>
         session.id === sessionId && session.status !== "completed"
-          ? { ...session, status: "paused", pausedAt: new Date().toISOString() }
+          ? {
+              ...session,
+              status: "paused",
+              pausedAt,
+              pauseEvents:
+                session.status === "paused"
+                  ? session.pauseEvents ?? []
+                  : [...(session.pauseEvents ?? []), { startedAt: pausedAt }],
+            }
           : session,
       ),
     }));
@@ -1637,16 +1810,28 @@ export default function Home() {
       return;
     }
 
+    const completedAt = new Date().toISOString();
     setStore((prev) => ({
       ...prev,
       sessions: prev.sessions.map((session) => {
         if (session.id !== sessionId) return session;
         const recomputedScores = computeScoresFromAnswers(session.grade, session.answers, session.startedAt);
+        const finalizedPauses = finalizePauseEvents(session.pauseEvents, completedAt);
+        const quality = computeAttemptQuality({
+          grade: session.grade,
+          startedAt: session.startedAt,
+          completedAt,
+          answers: session.answers,
+          scores: recomputedScores,
+          pauseEvents: finalizedPauses,
+        });
         return {
           ...session,
           status: "completed",
-          completedAt: new Date().toISOString(),
+          completedAt,
           scores: recomputedScores,
+          pauseEvents: finalizedPauses,
+          quality,
           recommendation: computeRecommendation(session.grade, recomputedScores),
           adminState: "default",
         };
@@ -1669,6 +1854,8 @@ export default function Home() {
           pausedAt: restartedAt,
           completedAt: undefined,
           answers: [],
+          pauseEvents: [],
+          quality: undefined,
           currentQuestionIndex: 0,
           scores: freshScores,
           recommendation: computeRecommendation(session.grade, freshScores),
@@ -1697,6 +1884,7 @@ export default function Home() {
           answers: trimmedAnswers,
           currentQuestionIndex: clamp(trimmedAnswers.length, 0, totalQuestions),
           scores: nextScores,
+          quality: undefined,
           recommendation: computeRecommendation(session.grade, nextScores),
           adminState: "reopened",
         };
@@ -1826,6 +2014,9 @@ export default function Home() {
       ["Статус сессии", `${adminStatusLabel(selectedReportSession)} (${sessionStatusTechnicalLabel(selectedReportSession.status)})`],
       ["Дата/время завершения", formatDateTime(selectedReportSession.completedAt)],
       ["Суммарная длительность", formatDuration(selectedReportSession.scores.reduce((acc, score) => acc + score.durationSec, 0))],
+      ["Качество попытки", selectedReportSession.quality?.status ?? "—"],
+      ["Пояснение к качеству", selectedReportSession.quality?.explanation ?? "—"],
+      ["Флаги качества", selectedReportSession.quality?.flags.join(" | ") || "Нет выраженных флагов"],
       [],
       ["Домен", "Raw", "Scaled", "Длительность", "Краткая интерпретация", "Субнавыковая интерпретация"],
     ];
@@ -1866,9 +2057,17 @@ export default function Home() {
         const completed = classSessions.filter((session) => session.status === "completed");
         const paused = classSessions.filter((session) => session.status === "paused");
         const recommendationCounter = new Map<string, number>();
+        const qualityCounter = new Map<AttemptQualityStatus, number>([
+          ["Надёжная попытка", 0],
+          ["Допустимая попытка", 0],
+          ["Требует осторожной интерпретации", 0],
+          ["Сомнительное качество прохождения", 0],
+        ]);
         completed.forEach((session) => {
           const label = recommendationBucket(session.adminOverride?.text || session.recommendation);
           recommendationCounter.set(label, (recommendationCounter.get(label) ?? 0) + 1);
+          const quality = session.quality ?? computeAttemptQuality(session);
+          qualityCounter.set(quality.status, (qualityCounter.get(quality.status) ?? 0) + 1);
         });
 
         const avgScaledByDomain = BATTERIES[gradeFromClassGroup(group)].map((battery) => {
@@ -1900,6 +2099,10 @@ export default function Home() {
           notCompleted: Math.max(classChildren.length - completed.length, 0),
           paused: paused.length,
           expertReviewNeeded: completed.filter((session) => needsExpertReview(session)).length,
+          qualityHigh: (qualityCounter.get("Надёжная попытка") ?? 0) + (qualityCounter.get("Допустимая попытка") ?? 0),
+          qualityCaution: qualityCounter.get("Требует осторожной интерпретации") ?? 0,
+          qualityDoubtful: qualityCounter.get("Сомнительное качество прохождения") ?? 0,
+          qualityDistribution: [...qualityCounter.entries()].map(([label, count]) => ({ label, count })),
           recommendationDistribution: [...recommendationCounter.entries()]
             .map(([label, count]) => ({ label, count }))
             .sort((a, b) => b.count - a.count),
@@ -1927,6 +2130,10 @@ export default function Home() {
       ["Не завершили", String(selectedClassSummary.notCompleted)],
       ["На паузе", String(selectedClassSummary.paused)],
       ["Нужен экспертный разбор", String(selectedClassSummary.expertReviewNeeded)],
+      ["Качество (надёжные/допустимые)", String(selectedClassSummary.qualityHigh)],
+      ["Качество (требует осторожности)", String(selectedClassSummary.qualityCaution)],
+      ["Качество (сомнительное)", String(selectedClassSummary.qualityDoubtful)],
+      ["Распределение качества", selectedClassSummary.qualityDistribution.map((item) => `${item.label}: ${item.count}`).join(" | ") || "—"],
       ["Распределение рекомендаций", selectedClassSummary.recommendationDistribution.map((item) => `${item.label}: ${item.count}`).join(" | ") || "—"],
       ["Трудные домены", selectedClassSummary.domainDifficultyHighlights.join(" | ")],
       ["Трудные субнавыки", selectedClassSummary.subskillDifficultyHighlights.join(" | ")],
@@ -1978,6 +2185,10 @@ export default function Home() {
         "Не завершили",
         "На паузе",
         "Нужен экспертный разбор",
+        "Качество: надёжные/допустимые",
+        "Качество: требует осторожности",
+        "Качество: сомнительное",
+        "Распределение качества",
         "Распределение рекомендаций",
         "Трудные домены",
         "Трудные субнавыки",
@@ -1989,6 +2200,10 @@ export default function Home() {
         String(row.notCompleted),
         String(row.paused),
         String(row.expertReviewNeeded),
+        String(row.qualityHigh),
+        String(row.qualityCaution),
+        String(row.qualityDoubtful),
+        row.qualityDistribution.map((item) => `${item.label}: ${item.count}`).join(" | ") || "—",
         row.recommendationDistribution.map((item) => `${item.label}: ${item.count}`).join(" | ") || "—",
         row.domainDifficultyHighlights.join(" | "),
         row.subskillDifficultyHighlights.join(" | "),
@@ -2081,6 +2296,20 @@ export default function Home() {
     selectedClassCompletedSessions.forEach((session) => {
       const key = recommendationCategory(session);
       map.set(key, (map.get(key) ?? 0) + 1);
+    });
+    return [...map.entries()].map(([label, count]) => ({ label, count }));
+  }, [selectedClassCompletedSessions]);
+
+  const classQualityData = useMemo(() => {
+    const map = new Map<AttemptQualityStatus, number>([
+      ["Надёжная попытка", 0],
+      ["Допустимая попытка", 0],
+      ["Требует осторожной интерпретации", 0],
+      ["Сомнительное качество прохождения", 0],
+    ]);
+    selectedClassCompletedSessions.forEach((session) => {
+      const quality = session.quality ?? computeAttemptQuality(session);
+      map.set(quality.status, (map.get(quality.status) ?? 0) + 1);
     });
     return [...map.entries()].map(([label, count]) => ({ label, count }));
   }, [selectedClassCompletedSessions]);
@@ -2511,6 +2740,7 @@ export default function Home() {
                   {selectedReportSession && (() => {
                     const child = store.children.find((item) => item.id === selectedReportSession.childId);
                     const recommendation = selectedReportSession.adminOverride?.text || selectedReportSession.recommendation;
+                    const quality = selectedReportSession.quality ?? computeAttemptQuality(selectedReportSession);
                     const domainSubskillNotes = BATTERIES[selectedReportSession.grade].map((battery) => ({
                       batteryId: battery.id,
                       title: battery.shortTitle,
@@ -2567,7 +2797,24 @@ export default function Home() {
                           <div><dt className="text-slate-400">Статус сессии</dt><dd>{adminStatusLabel(selectedReportSession)} ({sessionStatusTechnicalLabel(selectedReportSession.status)})</dd></div>
                           <div><dt className="text-slate-400">Дата/время завершения</dt><dd>{formatDateTime(selectedReportSession.completedAt)}</dd></div>
                           <div><dt className="text-slate-400">Суммарная длительность</dt><dd>{formatDuration(selectedReportSession.scores.reduce((acc, item) => acc + item.durationSec, 0))}</dd></div>
+                          <div><dt className="text-slate-400">Качество прохождения</dt><dd className="font-semibold">{quality.status}</dd></div>
                         </dl>
+
+                        <div className="rounded-md border border-cyan-700/70 bg-cyan-950/20 p-3 text-sm text-cyan-100">
+                          <p className="font-semibold">Оценка надёжности попытки</p>
+                          <p className="mt-1">{quality.explanation}</p>
+                          <ul className="mt-2 list-disc space-y-1 pl-5 text-xs">
+                            <li>Общее время: {formatDuration(quality.totalCompletionSec)}</li>
+                            <li>Количество пауз: {quality.pauseCount}, суммарно {formatDuration(quality.pauseDurationSec)}</li>
+                            <li>Время по доменам: {quality.domainCompletionSec.map((item) => `${batteryLabel(item.batteryId)} — ${formatDuration(item.seconds)}`).join("; ")}</li>
+                          </ul>
+                          <p className="mt-2 text-xs font-semibold text-cyan-200">Флаги качества:</p>
+                          <ul className="list-disc space-y-1 pl-5 text-xs">
+                            {(quality.flags.length ? quality.flags : ["Явных рисковых маркеров не обнаружено."]).map((flag, idx) => (
+                              <li key={`quality-flag-${selectedReportSession.id}-${idx}`}>{flag}</li>
+                            ))}
+                          </ul>
+                        </div>
 
                         <div className="overflow-x-auto rounded-md border border-slate-700">
                           <table className="w-full text-left text-xs text-slate-100 md:text-sm">
@@ -2737,6 +2984,7 @@ export default function Home() {
                 {completedSessions.map((session) => {
                   const child = store.children.find((item) => item.id === session.childId);
                   const recommendation = session.adminOverride?.text || session.recommendation;
+                  const quality = session.quality ?? computeAttemptQuality(session);
                   const domainSubskillNotes = BATTERIES[session.grade].map((battery) => ({
                     batteryId: battery.id,
                     title: battery.shortTitle,
@@ -2753,6 +3001,8 @@ export default function Home() {
                         {session.campaignId} · {child?.registryId ?? "Профиль удалён"}
                       </p>
                       <p className="mb-1 text-xs uppercase tracking-wide text-amber-300">Статус: {adminStatusLabel(session)}</p>
+                      <p className="mb-1 text-xs text-cyan-200">Качество попытки: {quality.status}</p>
+                      <p className="mb-2 text-xs text-cyan-100">{quality.explanation}</p>
                       <p className="mb-3 text-sm text-slate-100">Итоговая рекомендация: {recommendation || "—"}</p>
 
                       <div className="mb-3 overflow-x-auto rounded-md border border-slate-700">
@@ -2911,6 +3161,17 @@ export default function Home() {
                       <p>Не завершили: <strong>{row.notCompleted}</strong></p>
                       <p>На паузе: <strong>{row.paused}</strong></p>
                       <p>Требуют экспертного разбора: <strong>{row.expertReviewNeeded}</strong></p>
+                      <p>Надёжные/допустимые: <strong>{row.qualityHigh}</strong></p>
+                      <p>Требуют осторожности: <strong>{row.qualityCaution}</strong></p>
+                      <p>Сомнительные: <strong>{row.qualityDoubtful}</strong></p>
+                    </div>
+                    <div className="mt-2">
+                      <p className="font-medium text-slate-200">Распределение качества попыток:</p>
+                      <ul className="list-disc pl-5 text-slate-300">
+                        {row.qualityDistribution.map((item) => (
+                          <li key={`${row.classGroup}-quality-${item.label}`}>{item.label}: {item.count}</li>
+                        ))}
+                      </ul>
                     </div>
                     <div className="mt-2">
                       <p className="font-medium text-slate-200">Распределение рекомендаций:</p>
@@ -3012,6 +3273,20 @@ export default function Home() {
                       </BarChart>
                     </ResponsiveContainer>
                   </div>
+                </div>
+              </div>
+              <div className="mt-3 rounded-md border border-slate-700 bg-slate-950/70 p-3">
+                <p className="mb-2 text-sm font-semibold">Распределение качества прохождения по классу</p>
+                <div className="h-72">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <BarChart layout="vertical" data={classQualityData}>
+                      <CartesianGrid strokeDasharray="3 3" stroke="#334155" />
+                      <XAxis type="number" tick={{ fill: "#cbd5e1", fontSize: 12 }} />
+                      <YAxis type="category" dataKey="label" width={260} tick={{ fill: "#cbd5e1", fontSize: 11 }} />
+                      <Tooltip />
+                      <Bar dataKey="count" name="Количество попыток" fill="#06b6d4" />
+                    </BarChart>
+                  </ResponsiveContainer>
                 </div>
               </div>
               <div className="mt-3 grid gap-3 md:grid-cols-2">
@@ -3262,6 +3537,10 @@ export default function Home() {
                       <th className="p-2">Не завершили</th>
                       <th className="p-2">На паузе</th>
                       <th className="p-2">Нужен экспертный разбор</th>
+                      <th className="p-2">Надёжные/допустимые</th>
+                      <th className="p-2">Требуют осторожности</th>
+                      <th className="p-2">Сомнительные</th>
+                      <th className="p-2">Распределение качества</th>
                       <th className="p-2">Распределение рекомендаций</th>
                       <th className="p-2">Трудные домены</th>
                       <th className="p-2">Трудные субнавыки</th>
@@ -3276,6 +3555,10 @@ export default function Home() {
                         <td className="p-2">{row.notCompleted}</td>
                         <td className="p-2">{row.paused}</td>
                         <td className="p-2">{row.expertReviewNeeded}</td>
+                        <td className="p-2">{row.qualityHigh}</td>
+                        <td className="p-2">{row.qualityCaution}</td>
+                        <td className="p-2">{row.qualityDoubtful}</td>
+                        <td className="p-2">{row.qualityDistribution.map((item) => `${item.label}: ${item.count}`).join(" | ") || "—"}</td>
                         <td className="p-2">{row.recommendationDistribution.map((item) => `${item.label}: ${item.count}`).join(" | ") || "—"}</td>
                         <td className="p-2">{row.domainDifficultyHighlights.join(" | ")}</td>
                         <td className="p-2">{row.subskillDifficultyHighlights.join(" | ")}</td>
