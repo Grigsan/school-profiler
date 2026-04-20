@@ -79,6 +79,17 @@ type Session = {
   adminState?: SessionAdminState;
 };
 
+type ClassSummaryRow = {
+  classGroup: ClassGroup;
+  totalStudents: number;
+  completed: number;
+  notCompleted: number;
+  paused: number;
+  expertReviewNeeded: number;
+  recommendationDistribution: Array<{ label: string; count: number }>;
+  domainDifficultyHighlights: string[];
+};
+
 type Store = {
   children: Child[];
   accessCodes: AccessCodeRecord[];
@@ -384,6 +395,37 @@ function computeRecommendation(grade: Grade, scores: SessionScore[]): string {
   return `Предварительная рекомендация: поддерживающий маршрут с поэтапным усилением базовых навыков. Основание: средний доменный балл ${avg.toFixed(1)}/10, минимальный доменный показатель ${min}/10. ${strongestNote} ${weakestNote} Нужна дополнительная оценка специалистом и наблюдение в динамике; автоматическое решение по одной сессии недопустимо. ${cautionNote}`;
 }
 
+function formatDateTime(value?: string): string {
+  if (!value) return "—";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "—";
+  return date.toLocaleString("ru-RU", { hour12: false });
+}
+
+function formatDuration(totalSeconds: number): string {
+  const normalized = Math.max(0, Math.round(totalSeconds));
+  const minutes = Math.floor(normalized / 60);
+  const seconds = normalized % 60;
+  return `${minutes} мин ${seconds.toString().padStart(2, "0")} сек`;
+}
+
+function recommendationBucket(text: string): string {
+  const normalized = text.toLowerCase();
+  if (normalized.includes("расширенный профиль")) return "Расширенный профиль";
+  if (normalized.includes("базовый маршрут")) return "Базовый маршрут";
+  if (normalized.includes("поддерживающий маршрут")) return "Поддерживающий маршрут";
+  return "Требуется уточнение специалиста";
+}
+
+function needsExpertReview(session: Session): boolean {
+  if (session.status !== "completed") return false;
+  const scaled = BATTERIES[session.grade].map((battery) => session.scores.find((score) => score.batteryId === battery.id)?.scaledScore ?? 1);
+  const min = Math.min(...scaled);
+  const max = Math.max(...scaled);
+  const spread = max - min;
+  return min <= 3 || spread >= 4 || session.recommendation.toLowerCase().includes("дополнительн");
+}
+
 function asArray<T>(value: unknown): T[] {
   return Array.isArray(value) ? (value as T[]) : [];
 }
@@ -627,6 +669,7 @@ export default function Home() {
     () => (loggedChild ? store.sessions.filter((session) => session.childId === loggedChild.id) : []),
     [loggedChild, store.sessions],
   );
+  const [selectedReportSessionId, setSelectedReportSessionId] = useState<string>("");
 
   function show(type: "ok" | "error", text: string): void {
     setMessage({ type, text });
@@ -1021,11 +1064,48 @@ export default function Home() {
     return usedIds;
   }, [store.sessions]);
 
-  const campaignSummary = FIXED_CAMPAIGNS.map((campaign) => {
-    const items = store.sessions.filter((session) => session.campaignId === campaign.id && session.status === "completed");
-    const recommendations = items.map((session) => session.adminOverride?.text || session.recommendation).filter(Boolean);
-    return { campaign, done: items.length, recommendations };
-  });
+  const selectedReportSession = useMemo(
+    () => completedSessions.find((session) => session.id === selectedReportSessionId) ?? completedSessions[0],
+    [completedSessions, selectedReportSessionId],
+  );
+
+  const classSummaryRows = useMemo<ClassSummaryRow[]>(
+    () =>
+      CLASS_GROUPS.map((group) => {
+        const classChildren = store.children.filter((child) => child.classGroup === group);
+        const classSessions = store.sessions.filter((session) => session.campaignId === group);
+        const completed = classSessions.filter((session) => session.status === "completed");
+        const paused = classSessions.filter((session) => session.status === "paused");
+        const recommendationCounter = new Map<string, number>();
+        completed.forEach((session) => {
+          const label = recommendationBucket(session.adminOverride?.text || session.recommendation);
+          recommendationCounter.set(label, (recommendationCounter.get(label) ?? 0) + 1);
+        });
+
+        const avgScaledByDomain = BATTERIES[gradeFromClassGroup(group)].map((battery) => {
+          const values = completed.map((session) => session.scores.find((score) => score.batteryId === battery.id)?.scaledScore ?? 1);
+          const avg = values.length ? values.reduce((acc, value) => acc + value, 0) / values.length : 0;
+          return { title: battery.shortTitle, avg };
+        });
+        const hardest = avgScaledByDomain.filter((item) => item.avg > 0).sort((a, b) => a.avg - b.avg).slice(0, 2);
+
+        return {
+          classGroup: group,
+          totalStudents: classChildren.length,
+          completed: completed.length,
+          notCompleted: Math.max(classChildren.length - completed.length, 0),
+          paused: paused.length,
+          expertReviewNeeded: completed.filter((session) => needsExpertReview(session)).length,
+          recommendationDistribution: [...recommendationCounter.entries()]
+            .map(([label, count]) => ({ label, count }))
+            .sort((a, b) => b.count - a.count),
+          domainDifficultyHighlights: hardest.length
+            ? hardest.map((item) => `${item.title}: средний scaled ${item.avg.toFixed(1)}/10`)
+            : ["Недостаточно завершённых сессий для оценки."],
+        };
+      }),
+    [store.children, store.sessions],
+  );
 
   const activeChildSession = loggedChild
     ? childSessions.find((session) => session.campaignId === loggedChild.classGroup && session.status !== "completed")
@@ -1177,6 +1257,105 @@ export default function Home() {
             </article>
 
             <article className={`${cardClass} md:col-span-2`}>
+              <h2 className="mb-3 text-lg font-semibold text-white">Индивидуальный отчёт по ребёнку / сессии</h2>
+              {completedSessions.length ? (
+                <>
+                  <div className="mb-3">
+                    <label className="text-sm text-slate-200">
+                      Выберите завершённую сессию
+                      <select
+                        className="ml-2 rounded-md border border-slate-500 bg-slate-800 p-1 text-slate-100"
+                        value={selectedReportSession?.id ?? ""}
+                        onChange={(e) => setSelectedReportSessionId(e.target.value)}
+                      >
+                        {completedSessions.map((session) => {
+                          const child = store.children.find((item) => item.id === session.childId);
+                          return (
+                            <option key={session.id} value={session.id}>
+                              {child?.registryId ?? "Профиль удалён"} · {session.campaignId} · {formatDateTime(session.completedAt)}
+                            </option>
+                          );
+                        })}
+                      </select>
+                    </label>
+                  </div>
+
+                  {selectedReportSession && (() => {
+                    const child = store.children.find((item) => item.id === selectedReportSession.childId);
+                    const recommendation = selectedReportSession.adminOverride?.text || selectedReportSession.recommendation;
+                    const domainSubskillNotes = BATTERIES[selectedReportSession.grade].map((battery) => ({
+                      batteryId: battery.id,
+                      title: battery.shortTitle,
+                      notes: subskillDiagnostics(
+                        selectedReportSession.grade,
+                        selectedReportSession.answers.filter((answer) => answer.batteryId === battery.id),
+                        battery.id,
+                      ),
+                    }));
+
+                    return (
+                      <div className="space-y-3 rounded-md border border-slate-700 bg-slate-900 p-3">
+                        <dl className="grid gap-2 text-sm md:grid-cols-2">
+                          <div><dt className="text-slate-400">student_id</dt><dd className="font-semibold">{child?.registryId ?? "—"}</dd></div>
+                          <div><dt className="text-slate-400">Класс</dt><dd className="font-semibold">{selectedReportSession.campaignId}</dd></div>
+                          <div><dt className="text-slate-400">Статус сессии</dt><dd>{adminStatusLabel(selectedReportSession)}</dd></div>
+                          <div><dt className="text-slate-400">Дата/время завершения</dt><dd>{formatDateTime(selectedReportSession.completedAt)}</dd></div>
+                        </dl>
+
+                        <div className="overflow-x-auto rounded-md border border-slate-700">
+                          <table className="w-full text-left text-xs text-slate-100 md:text-sm">
+                            <thead className="bg-slate-800">
+                              <tr>
+                                <th className="p-2">Домен</th>
+                                <th className="p-2">Raw score</th>
+                                <th className="p-2">Scaled score</th>
+                                <th className="p-2">Длительность</th>
+                                <th className="p-2">Краткая интерпретация</th>
+                                <th className="p-2">Субнавыковая интерпретация</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {BATTERIES[selectedReportSession.grade].map((battery) => {
+                                const score = selectedReportSession.scores.find((item) => item.batteryId === battery.id);
+                                const notes = domainSubskillNotes.find((item) => item.batteryId === battery.id)?.notes ?? [];
+                                return (
+                                  <tr className="border-t border-slate-700" key={`${selectedReportSession.id}-${battery.id}`}>
+                                    <td className="p-2">{battery.shortTitle}</td>
+                                    <td className="p-2">{score?.rawScore ?? 0}% ({score?.correct ?? 0}/{score?.answered ?? 0})</td>
+                                    <td className="p-2">{score?.scaledScore ?? 1}/10</td>
+                                    <td className="p-2">{formatDuration(score?.durationSec ?? 0)}</td>
+                                    <td className="p-2">{score?.interpretation ?? "—"}</td>
+                                    <td className="p-2">{notes.length ? notes.join(" ") : "Недостаточно данных для интерпретации."}</td>
+                                  </tr>
+                                );
+                              })}
+                            </tbody>
+                          </table>
+                        </div>
+
+                        <div className="rounded-md border border-emerald-700/70 bg-emerald-950/20 p-3 text-sm text-emerald-100">
+                          <p className="font-semibold">Итоговая рекомендация</p>
+                          <p>{recommendation || "—"}</p>
+                        </div>
+
+                        <div className="rounded-md border border-sky-700/70 bg-sky-950/30 p-3 text-xs text-sky-100">
+                          <p className="font-semibold text-sky-200">Методологическая пометка</p>
+                          <ul className="mt-1 list-disc space-y-1 pl-5">
+                            <li>Результаты предварительные.</li>
+                            <li>Рекомендации носят консультативный характер.</li>
+                            <li>Финальное образовательное решение требует очного профессионального разбора.</li>
+                          </ul>
+                        </div>
+                      </div>
+                    );
+                  })()}
+                </>
+              ) : (
+                <p className="text-sm text-slate-400">Пока нет завершённых сессий для формирования индивидуального отчёта.</p>
+              )}
+            </article>
+
+            <article className={`${cardClass} md:col-span-2`}>
               <h2 className="mb-3 text-lg font-semibold text-white">Завершенные сессии и ручная проверка</h2>
               <div className="mb-3 rounded-md border border-sky-700/70 bg-sky-950/30 p-3 text-xs text-sky-100">
                 <p className="font-semibold text-sky-200">Методологическая пометка</p>
@@ -1293,17 +1472,120 @@ export default function Home() {
             </article>
 
             <article className={`${cardClass} md:col-span-2`}>
-              <h2 className="mb-3 text-lg font-semibold text-white">Итоговые рекомендации по классам</h2>
-              <ul className="space-y-3 text-sm">
-                {campaignSummary.map((item) => (
-                  <li key={item.campaign.id} className="rounded-md border border-slate-700 bg-slate-900 p-2">
-                    <p className="font-medium text-slate-100">{item.campaign.title} — завершено: {item.done}</p>
-                    <ul className="list-disc pl-5 text-slate-200">
-                      {item.recommendations.length ? item.recommendations.map((text, index) => <li key={`${item.campaign.id}-${index}`}>{text}</li>) : <li>Рекомендаций пока нет.</li>}
-                    </ul>
-                  </li>
+              <h2 className="mb-3 text-lg font-semibold text-white">Сводка по классам (4А / 4Б / 6А / 6Б)</h2>
+              <div className="space-y-3 text-sm">
+                {classSummaryRows.map((row) => (
+                  <div key={row.classGroup} className="rounded-md border border-slate-700 bg-slate-900 p-3">
+                    <p className="font-semibold text-slate-100">Класс {row.classGroup}</p>
+                    <div className="mt-2 grid gap-2 md:grid-cols-3">
+                      <p>Всего учеников: <strong>{row.totalStudents}</strong></p>
+                      <p>Завершили: <strong>{row.completed}</strong></p>
+                      <p>Не завершили: <strong>{row.notCompleted}</strong></p>
+                      <p>На паузе: <strong>{row.paused}</strong></p>
+                      <p>Требуют экспертного разбора: <strong>{row.expertReviewNeeded}</strong></p>
+                    </div>
+                    <div className="mt-2">
+                      <p className="font-medium text-slate-200">Распределение рекомендаций:</p>
+                      <ul className="list-disc pl-5 text-slate-300">
+                        {row.recommendationDistribution.length ? (
+                          row.recommendationDistribution.map((item) => (
+                            <li key={`${row.classGroup}-${item.label}`}>{item.label}: {item.count}</li>
+                          ))
+                        ) : (
+                          <li>Пока нет завершённых рекомендаций.</li>
+                        )}
+                      </ul>
+                    </div>
+                    <div className="mt-2">
+                      <p className="font-medium text-slate-200">Подсветка трудных доменов:</p>
+                      <ul className="list-disc pl-5 text-slate-300">
+                        {row.domainDifficultyHighlights.map((item, idx) => (
+                          <li key={`${row.classGroup}-hard-${idx}`}>{item}</li>
+                        ))}
+                      </ul>
+                    </div>
+                  </div>
                 ))}
-              </ul>
+              </div>
+            </article>
+
+            <article className={`${cardClass} md:col-span-2`}>
+              <h2 className="mb-3 text-lg font-semibold text-white">Экспорт-таблица: завершённые результаты детей</h2>
+              <div className="overflow-x-auto rounded-md border border-slate-700">
+                <table className="w-full text-left text-xs text-slate-100 md:text-sm">
+                  <thead className="bg-slate-800">
+                    <tr>
+                      <th className="p-2">student_id</th>
+                      <th className="p-2">Класс</th>
+                      <th className="p-2">Статус</th>
+                      <th className="p-2">Завершено</th>
+                      <th className="p-2">Интеллект (raw/scaled)</th>
+                      <th className="p-2">Логика (raw/scaled)</th>
+                      <th className="p-2">Математика (raw/scaled)</th>
+                      <th className="p-2">Итоговая рекомендация</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {completedSessions.map((session) => {
+                      const child = store.children.find((item) => item.id === session.childId);
+                      const intel = session.scores.find((score) => score.batteryId.includes("intelligence"));
+                      const logic = session.scores.find((score) => score.batteryId.includes("logic"));
+                      const math = session.scores.find((score) => score.batteryId.includes("math_aptitude"));
+                      return (
+                        <tr key={`export-completed-${session.id}`} className="border-t border-slate-700">
+                          <td className="p-2">{child?.registryId ?? "—"}</td>
+                          <td className="p-2">{session.campaignId}</td>
+                          <td className="p-2">{adminStatusLabel(session)}</td>
+                          <td className="p-2">{formatDateTime(session.completedAt)}</td>
+                          <td className="p-2">{intel?.rawScore ?? 0}% / {intel?.scaledScore ?? 1}</td>
+                          <td className="p-2">{logic?.rawScore ?? 0}% / {logic?.scaledScore ?? 1}</td>
+                          <td className="p-2">{math?.rawScore ?? 0}% / {math?.scaledScore ?? 1}</td>
+                          <td className="p-2">{session.adminOverride?.text || session.recommendation}</td>
+                        </tr>
+                      );
+                    })}
+                    {!completedSessions.length && (
+                      <tr>
+                        <td className="p-2 text-slate-400" colSpan={8}>Нет завершённых сессий.</td>
+                      </tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            </article>
+
+            <article className={`${cardClass} md:col-span-2`}>
+              <h2 className="mb-3 text-lg font-semibold text-white">Экспорт-таблица: сводка классов</h2>
+              <div className="overflow-x-auto rounded-md border border-slate-700">
+                <table className="w-full text-left text-xs text-slate-100 md:text-sm">
+                  <thead className="bg-slate-800">
+                    <tr>
+                      <th className="p-2">Класс</th>
+                      <th className="p-2">Всего учеников</th>
+                      <th className="p-2">Завершили</th>
+                      <th className="p-2">Не завершили</th>
+                      <th className="p-2">На паузе</th>
+                      <th className="p-2">Нужен экспертный разбор</th>
+                      <th className="p-2">Распределение рекомендаций</th>
+                      <th className="p-2">Трудные домены</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {classSummaryRows.map((row) => (
+                      <tr key={`export-class-${row.classGroup}`} className="border-t border-slate-700">
+                        <td className="p-2">{row.classGroup}</td>
+                        <td className="p-2">{row.totalStudents}</td>
+                        <td className="p-2">{row.completed}</td>
+                        <td className="p-2">{row.notCompleted}</td>
+                        <td className="p-2">{row.paused}</td>
+                        <td className="p-2">{row.expertReviewNeeded}</td>
+                        <td className="p-2">{row.recommendationDistribution.map((item) => `${item.label}: ${item.count}`).join(" | ") || "—"}</td>
+                        <td className="p-2">{row.domainDifficultyHighlights.join(" | ")}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
             </article>
           </section>
         )
