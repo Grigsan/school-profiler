@@ -213,6 +213,8 @@ function sessionKey(session: Pick<Session, "childId" | "campaignId">): string {
 }
 
 function isResumableSession(session: Session): boolean {
+  // Shared answerability rule for both child UI rendering and answer handling:
+  // paused sessions remain resumable until completion/cancel flows change status.
   return session.status === "active" || session.status === "paused";
 }
 
