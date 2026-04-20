@@ -125,6 +125,28 @@ type Store = {
   accessCodes: AccessCodeRecord[];
   campaigns: Campaign[];
   sessions: Session[];
+  classSummaries?: ClassSummaryRow[];
+};
+
+type BackupFormatVersion = "1.0.0";
+
+type AppBackup = {
+  schema: "school-profiler-backup";
+  backupFormatVersion: BackupFormatVersion;
+  exportedAt: string;
+  environmentNote?: string;
+  appStorageKey: string;
+  data: Store;
+};
+
+type BackupImportPreview = {
+  fileName: string;
+  backup: AppBackup;
+  normalizedStore: Store;
+  studentsCount: number;
+  codesCount: number;
+  sessionsCount: number;
+  completedSessionsCount: number;
 };
 
 type ParsedRegistryRow = {
@@ -172,6 +194,8 @@ type BatteryDefinition = {
 };
 
 const STORAGE_KEY = "school-profiler-store-v1";
+const BACKUP_SCHEMA = "school-profiler-backup";
+const BACKUP_FORMAT_VERSION: BackupFormatVersion = "1.0.0";
 const ADMIN_PIN = "4321";
 const DEMO_ADMIN_HELPER_ENABLED = process.env.NODE_ENV !== "production";
 const CLASS_GROUPS: ClassGroup[] = ["4А", "4Б", "6А", "6Б"];
@@ -589,6 +613,10 @@ function asArray<T>(value: unknown): T[] {
   return Array.isArray(value) ? (value as T[]) : [];
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
 function normalizeAnswers(grade: Grade, answers: Session["answers"]): SessionAnswer[] {
   const gradeQuestions = QUESTION_SETS[grade];
   return asArray<SessionAnswer>(answers).map((answer, index) => {
@@ -701,6 +729,7 @@ function normalizeStore(raw: Store): Store {
     children: normalizedChildren,
     accessCodes: normalizeAccessCodes((raw as Store & { accessCodes?: AccessCodeRecord[] }).accessCodes, normalizedChildren),
     campaigns: FIXED_CAMPAIGNS,
+    classSummaries: Array.isArray((raw as Store).classSummaries) ? asArray<ClassSummaryRow>((raw as Store).classSummaries) : undefined,
     sessions: sessions.map((session) => {
       if (!demotedCompleted.has(session.id)) return session;
       return {
@@ -712,6 +741,49 @@ function normalizeStore(raw: Store): Store {
       };
     }),
   };
+}
+
+function parseBackupPayload(raw: unknown): { ok: true; preview: BackupImportPreview } | { ok: false; error: string } {
+  if (!isRecord(raw)) {
+    return { ok: false, error: "Файл резервной копии должен быть JSON-объектом." };
+  }
+  if (raw.schema !== BACKUP_SCHEMA) {
+    return { ok: false, error: "Неизвестный формат резервной копии (schema)." };
+  }
+  if (raw.backupFormatVersion !== BACKUP_FORMAT_VERSION) {
+    return { ok: false, error: `Неподдерживаемая версия резервной копии: ${String(raw.backupFormatVersion)}.` };
+  }
+  if (typeof raw.exportedAt !== "string" || Number.isNaN(Date.parse(raw.exportedAt))) {
+    return { ok: false, error: "В резервной копии отсутствует корректная дата экспорта." };
+  }
+  if (!isRecord(raw.data)) {
+    return { ok: false, error: "В резервной копии отсутствует блок data." };
+  }
+  if (!Array.isArray(raw.data.children) || !Array.isArray(raw.data.accessCodes) || !Array.isArray(raw.data.sessions)) {
+    return { ok: false, error: "В блоке data отсутствуют обязательные массивы children/accessCodes/sessions." };
+  }
+
+  try {
+    const normalizedStore = normalizeStore(raw.data as Store);
+    const backup = raw as AppBackup;
+    const sessionsCount = normalizedStore.sessions.length;
+    const completedSessionsCount = normalizedStore.sessions.filter((session) => session.status === "completed").length;
+
+    return {
+      ok: true,
+      preview: {
+        fileName: "",
+        backup,
+        normalizedStore,
+        studentsCount: normalizedStore.children.length,
+        codesCount: normalizedStore.accessCodes.length,
+        sessionsCount,
+        completedSessionsCount,
+      },
+    };
+  } catch {
+    return { ok: false, error: "Структура data не прошла проверку и нормализацию." };
+  }
 }
 
 function toCsv(rows: string[][]): string {
@@ -893,6 +965,8 @@ export default function Home() {
   const [selectedRegistryClass, setSelectedRegistryClass] = useState<ClassGroup>("4А");
   const [registryImportPreview, setRegistryImportPreview] = useState<RegistryImportPreview | null>(null);
   const [isImportingRegistry, setIsImportingRegistry] = useState(false);
+  const [backupImportPreview, setBackupImportPreview] = useState<BackupImportPreview | null>(null);
+  const [isImportingBackup, setIsImportingBackup] = useState(false);
   const [loginCode, setLoginCode] = useState("");
   const [loggedChildId, setLoggedChildId] = useState<string | null>(null);
   const [pendingAnswerBySession, setPendingAnswerBySession] = useState<Record<string, string>>({});
@@ -952,6 +1026,96 @@ export default function Home() {
       return;
     }
     show("ok", "Печатная версия открыта.");
+  }
+
+  function exportFullBackup(): void {
+    if (!adminUnlocked) {
+      show("error", "Резервное копирование доступно только администратору.");
+      return;
+    }
+
+    let classSummariesFromStorage: ClassSummaryRow[] | undefined;
+    try {
+      const raw = window.localStorage.getItem(STORAGE_KEY);
+      if (raw) {
+        const parsed = JSON.parse(raw) as { classSummaries?: unknown };
+        if (Array.isArray(parsed.classSummaries)) {
+          classSummariesFromStorage = parsed.classSummaries as ClassSummaryRow[];
+        }
+      }
+    } catch {
+      // Игнорируем необязательный блок classSummaries, если он отсутствует или повреждён.
+    }
+
+    const backup: AppBackup = {
+      schema: BACKUP_SCHEMA,
+      backupFormatVersion: BACKUP_FORMAT_VERSION,
+      exportedAt: new Date().toISOString(),
+      environmentNote: "MVP local backup",
+      appStorageKey: STORAGE_KEY,
+      data: {
+        ...store,
+        campaigns: FIXED_CAMPAIGNS,
+        ...(classSummariesFromStorage ? { classSummaries: classSummariesFromStorage } : {}),
+      },
+    };
+
+    const formattedDate = new Date().toISOString().replaceAll(":", "-");
+    downloadText(JSON.stringify(backup, null, 2), `school-profiler-backup-${formattedDate}.json`, "application/json;charset=utf-8");
+    show("ok", "Резервная копия сохранена в JSON-файл.");
+  }
+
+  async function handleBackupFileImport(file: File): Promise<void> {
+    setIsImportingBackup(true);
+    try {
+      const content = await file.text();
+      let rawJson: unknown;
+      try {
+        rawJson = JSON.parse(content);
+      } catch {
+        show("error", "Файл резервной копии не является корректным JSON.");
+        setBackupImportPreview(null);
+        return;
+      }
+
+      const parsed = parseBackupPayload(rawJson);
+      if (!parsed.ok) {
+        show("error", `Резервная копия отклонена: ${parsed.error}`);
+        setBackupImportPreview(null);
+        return;
+      }
+
+      setBackupImportPreview({ ...parsed.preview, fileName: file.name });
+      show("ok", "Резервная копия загружена. Проверьте предпросмотр и подтвердите восстановление.");
+    } catch {
+      show("error", "Не удалось прочитать файл резервной копии.");
+      setBackupImportPreview(null);
+    } finally {
+      setIsImportingBackup(false);
+    }
+  }
+
+  function confirmBackupRestore(): void {
+    if (!backupImportPreview) {
+      show("error", "Нет загруженной резервной копии для восстановления.");
+      return;
+    }
+
+    const approved = window.confirm(
+      "Восстановление заменит текущие локальные данные (реестр, коды, сессии и результаты). Это действие нельзя отменить. Продолжить?",
+    );
+    if (!approved) {
+      show("error", "Восстановление отменено.");
+      return;
+    }
+
+    setStore(backupImportPreview.normalizedStore);
+    setBackupImportPreview(null);
+    setLoggedChildId(null);
+    setPendingAnswerBySession({});
+    pendingAnswerBySessionRef.current = {};
+    setSelectedReportSessionId("");
+    show("ok", "Данные успешно восстановлены из резервной копии.");
   }
 
   function unlockAdmin(e: FormEvent): void {
@@ -2149,6 +2313,56 @@ export default function Home() {
                   </tbody>
                 </table>
               </div>
+            </article>
+
+            <article className={`${cardClass} md:col-span-2`}>
+              <h2 className="mb-3 text-lg font-semibold text-white">Резервное копирование и восстановление</h2>
+              <p className="mb-3 text-sm text-slate-300">
+                Используйте резервную копию, чтобы перенести работу между компьютерами и защитить данные от очистки браузера.
+              </p>
+              <div className="mb-3 flex flex-wrap gap-2">
+                <button className={buttonPrimaryClass} onClick={exportFullBackup} type="button">
+                  Сохранить резервную копию
+                </button>
+              </div>
+              <div className="mb-3 flex flex-wrap items-center gap-2">
+                <input
+                  accept=".json,application/json"
+                  className="text-sm text-slate-200 file:mr-3 file:rounded-md file:border-0 file:bg-slate-700 file:px-3 file:py-2 file:text-slate-100 hover:file:bg-slate-600"
+                  onChange={(e) => {
+                    const file = e.target.files?.[0];
+                    if (file) void handleBackupFileImport(file);
+                    e.currentTarget.value = "";
+                  }}
+                  type="file"
+                />
+                <button className={buttonSecondaryClass} onClick={confirmBackupRestore} type="button" disabled={!backupImportPreview}>
+                  Восстановить из резервной копии
+                </button>
+                {isImportingBackup && <span className="text-xs text-slate-300">Чтение файла…</span>}
+              </div>
+
+              <div className="rounded-md border border-amber-600/60 bg-amber-950/20 p-3 text-sm text-amber-100">
+                <p className="font-semibold">Внимание</p>
+                <p>
+                  Подтверждённое восстановление полностью заменяет текущие локальные данные. Перед импортом проверьте предпросмотр и дату экспорта.
+                </p>
+              </div>
+
+              {backupImportPreview && (
+                <div className="mt-3 space-y-2 rounded-md border border-slate-600 bg-slate-950 p-3 text-sm text-slate-200">
+                  <p>Предпросмотр резервной копии: {backupImportPreview.fileName}</p>
+                  <ul className="list-disc space-y-1 pl-5 text-xs text-slate-300">
+                    <li>Версия формата: {backupImportPreview.backup.backupFormatVersion}</li>
+                    <li>Дата экспорта: {formatDateTime(backupImportPreview.backup.exportedAt)}</li>
+                    <li>Учеников: {backupImportPreview.studentsCount}</li>
+                    <li>Кодов доступа: {backupImportPreview.codesCount}</li>
+                    <li>Сессий: {backupImportPreview.sessionsCount}</li>
+                    <li>Завершённых сессий: {backupImportPreview.completedSessionsCount}</li>
+                    <li>Примечание среды: {backupImportPreview.backup.environmentNote || "—"}</li>
+                  </ul>
+                </div>
+              )}
             </article>
 
             <article className={`${cardClass} md:col-span-2`}>
