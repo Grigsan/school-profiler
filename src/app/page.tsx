@@ -1347,16 +1347,6 @@ export default function Home() {
     setTimeout(() => setMessage(null), 2800);
   }
 
-  async function copyRowsToClipboard(rows: string[][], successMessage: string): Promise<void> {
-    const payload = rows.map((row) => row.join("\t")).join("\n");
-    try {
-      await navigator.clipboard.writeText(payload);
-      show("ok", successMessage);
-    } catch {
-      show("error", "Не удалось скопировать таблицу в буфер обмена.");
-    }
-  }
-
   function printFromRef(ref: RefObject<HTMLDivElement | null>, title: string): void {
     const html = ref.current?.innerHTML;
     if (!html) {
@@ -3308,21 +3298,8 @@ export default function Home() {
                                 show("error", "Нет данных для экспорта отчёта.");
                                 return;
                               }
-                              void copyRowsToClipboard(selectedReportExportRows, "Индивидуальный отчёт скопирован (TSV).");
-                            }}
-                            type="button"
-                          >
-                            Копировать отчёт (TSV)
-                          </button>
-                          <button
-                            className={buttonSecondaryClass}
-                            onClick={() => {
-                              if (!selectedReportExportRows.length) {
-                                show("error", "Нет данных для экспорта отчёта.");
-                                return;
-                              }
                               const content = selectedReportExportRows.map((row) => row.join("\t")).join("\n");
-                              downloadText(content, `otchet-${child?.registryId ?? "uchenik"}-${selectedReportSession.campaignId}.tsv`, "text/tab-separated-values;charset=utf-8");
+                              downloadText(content, `child-report-${child?.registryId ?? "student"}-${selectedReportSession.campaignId}.tsv`, "text/tab-separated-values;charset=utf-8");
                               show("ok", "Индивидуальный отчёт сохранён как TSV.");
                             }}
                             type="button"
@@ -3700,21 +3677,8 @@ export default function Home() {
                       show("error", "Нет данных для экспорта рабочей сводки класса.");
                       return;
                     }
-                    void copyRowsToClipboard(selectedClassSummaryExportRows, `Рабочая сводка ${selectedAnalyticsClass} скопирована (TSV).`);
-                  }}
-                  type="button"
-                >
-                  Копировать сводку класса (TSV)
-                </button>
-                <button
-                  className={buttonSecondaryClass}
-                  onClick={() => {
-                    if (!selectedClassSummaryExportRows.length) {
-                      show("error", "Нет данных для экспорта рабочей сводки класса.");
-                      return;
-                    }
                     const content = selectedClassSummaryExportRows.map((row) => row.join("\t")).join("\n");
-                    downloadText(content, `rabochaya-svodka-${selectedAnalyticsClass}.tsv`, "text/tab-separated-values;charset=utf-8");
+                    downloadText(content, `class-summary-${selectedAnalyticsClass}.tsv`, "text/tab-separated-values;charset=utf-8");
                     show("ok", `Рабочая сводка ${selectedAnalyticsClass} сохранена как TSV.`);
                   }}
                   type="button"
@@ -4052,17 +4016,8 @@ export default function Home() {
                 <button
                   className={buttonSecondaryClass}
                   onClick={() => {
-                    void copyRowsToClipboard(classDecisionExportRows, `Таблица итоговых решений для ${selectedDecisionClass} скопирована (TSV).`);
-                  }}
-                  type="button"
-                >
-                  Копировать таблицу решений (TSV)
-                </button>
-                <button
-                  className={buttonSecondaryClass}
-                  onClick={() => {
                     const content = classDecisionExportRows.map((row) => row.join("\t")).join("\n");
-                    downloadText(content, `itogovye-resheniya-${selectedDecisionClass}.tsv`, "text/tab-separated-values;charset=utf-8");
+                    downloadText(content, `decision-workspace-${selectedDecisionClass}.tsv`, "text/tab-separated-values;charset=utf-8");
                     show("ok", `Таблица итоговых решений ${selectedDecisionClass} сохранена как TSV.`);
                   }}
                   type="button"
@@ -4210,23 +4165,24 @@ export default function Home() {
                 <button
                   className={buttonSecondaryClass}
                   onClick={() => {
-                    void copyRowsToClipboard(completedResultsExportRows, "Таблица завершённых результатов скопирована (TSV).");
+                    const content = completedResultsExportRows.map((row) => row.join("\t")).join("\n");
+                    downloadText(content, "completed-results.tsv", "text/tab-separated-values;charset=utf-8");
+                    show("ok", "Таблица завершённых результатов сохранена как TSV.");
                   }}
                   type="button"
                 >
-                  Копировать таблицу (TSV)
+                  Скачать таблицу (TSV)
                 </button>
                 <button
                   className={buttonSecondaryClass}
                   onClick={() => {
-                    void copyRowsToClipboard(
-                      completedResultsExportRows.map((row) => [row.join("; ")]),
-                      "Таблица скопирована в одноколоночном виде.",
-                    );
+                    const content = completedResultsExportRows.map((row) => row.join("; ")).join("\n");
+                    downloadText(content, "completed-results.txt", "text/plain;charset=utf-8");
+                    show("ok", "Отчёт сохранён как TXT.");
                   }}
                   type="button"
                 >
-                  Копировать в текстовом виде
+                  Скачать отчёт (TXT)
                 </button>
               </div>
               <div className="overflow-x-auto rounded-md border border-slate-700">
@@ -4278,11 +4234,13 @@ export default function Home() {
                 <button
                   className={buttonSecondaryClass}
                   onClick={() => {
-                    void copyRowsToClipboard(classSummaryExportRows, "Таблица сводки классов скопирована (TSV).");
+                    const content = classSummaryExportRows.map((row) => row.join("\t")).join("\n");
+                    downloadText(content, "class-summary-all.tsv", "text/tab-separated-values;charset=utf-8");
+                    show("ok", "Таблица сводки классов сохранена как TSV.");
                   }}
                   type="button"
                 >
-                  Копировать таблицу (TSV)
+                  Скачать таблицу (TSV)
                 </button>
               </div>
               <div className="overflow-x-auto rounded-md border border-slate-700">
