@@ -1,37 +1,36 @@
-import { cookies } from "next/headers";
 import { NextResponse } from "next/server";
-import { ADMIN_COOKIE_NAME, verifyAdminCookieValue } from "@/lib/auth";
-import { readState, resetState, updateState } from "@/lib/serverState";
+import { getDashboardStore } from "@/lib/dbStore";
+import { isAdminAuthorized } from "@/lib/adminGuard";
+import { prisma } from "@/lib/prisma";
 
 export const dynamic = "force-dynamic";
 
 export async function GET() {
-  const state = await readState();
-  return NextResponse.json(state);
+  if (!(await isAdminAuthorized())) {
+    return NextResponse.json({ error: "UNAUTHORIZED" }, { status: 401 });
+  }
+  const [store, meta] = await Promise.all([getDashboardStore(), prisma.systemMeta.findUnique({ where: { id: 1 } })]);
+  return NextResponse.json({ store, lastBackupAt: meta?.lastBackupAt?.toISOString() ?? null });
 }
 
-export async function PUT(request: Request) {
-  const body = (await request.json()) as { revision?: number; store?: unknown; lastBackupAt?: string | null };
-  const result = await updateState({
-    expectedRevision: typeof body.revision === "number" ? body.revision : -1,
-    store: body.store,
-    lastBackupAt: body.lastBackupAt,
-  });
-
-  if (!result.ok) {
-    return NextResponse.json({ error: "REVISION_CONFLICT", ...result.state }, { status: 409 });
-  }
-
-  return NextResponse.json(result.state);
+export async function PUT() {
+  return NextResponse.json(
+    { error: "DEPRECATED", message: "Глобальная запись состояния отключена. Используйте entity-scoped API." },
+    { status: 410 },
+  );
 }
 
 export async function DELETE() {
-  const cookieStore = await cookies();
-  const token = cookieStore.get(ADMIN_COOKIE_NAME)?.value;
-  if (!verifyAdminCookieValue(token)) {
+  if (!(await isAdminAuthorized())) {
     return NextResponse.json({ error: "UNAUTHORIZED" }, { status: 401 });
   }
-
-  const state = await resetState();
-  return NextResponse.json(state);
+  await prisma.$transaction([
+    prisma.answer.deleteMany(),
+    prisma.specialistReview.deleteMany(),
+    prisma.session.deleteMany(),
+    prisma.accessCode.deleteMany(),
+    prisma.child.deleteMany(),
+    prisma.systemMeta.upsert({ where: { id: 1 }, update: { lastBackupAt: null }, create: { id: 1, lastBackupAt: null } }),
+  ]);
+  return NextResponse.json({ ok: true });
 }

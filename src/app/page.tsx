@@ -1668,8 +1668,6 @@ function isSessionComplete(session: Session): boolean {
 
 export default function Home() {
   const [store, setStore] = useState<Store>(EMPTY_STORE);
-  const [storeRevision, setStoreRevision] = useState(0);
-  const [storeHydrated, setStoreHydrated] = useState(false);
 
   const [role, setRole] = useState<"admin" | "child">("child");
   const [message, setMessage] = useState<{ type: "ok" | "error"; text: string } | null>(null);
@@ -1698,18 +1696,16 @@ export default function Home() {
 
     async function hydrateStore(): Promise<void> {
       try {
-        const response = await fetch("/api/state", { cache: "no-store" });
-        if (!response.ok) throw new Error("hydrate failed");
-        const payload = (await response.json()) as { store: Store; revision: number; lastBackupAt: string | null };
+        const response = await fetch("/api/bootstrap", { cache: "no-store" });
+        if (!response.ok) {
+          return;
+        }
+        const payload = (await response.json()) as { store: Store };
         if (cancelled) return;
         setStore(normalizeStore(payload.store));
-        setStoreRevision(payload.revision ?? 0);
-        setLastBackupAt(payload.lastBackupAt ?? null);
-        setStoreHydrated(true);
       } catch {
         if (!cancelled) {
-          setStoreHydrated(true);
-          show("error", "Не удалось загрузить состояние с сервера.");
+          show("error", "Не удалось загрузить данные с сервера.");
         }
       }
     }
@@ -1720,45 +1716,6 @@ export default function Home() {
     };
   }, [show]);
 
-  useEffect(() => {
-    if (!storeHydrated) return;
-
-    const timeout = window.setTimeout(async () => {
-      try {
-        const response = await fetch("/api/state", {
-          method: "PUT",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            revision: storeRevision,
-            store: { ...store, campaigns: FIXED_CAMPAIGNS },
-            lastBackupAt,
-          }),
-        });
-
-        const payload = await response.json();
-        if (response.status === 409) {
-          setStore(normalizeStore(payload.store));
-          setStoreRevision(payload.revision ?? 0);
-          setLastBackupAt(payload.lastBackupAt ?? null);
-          show("error", "Данные на сервере изменились с другого устройства. Последняя версия загружена автоматически.");
-          return;
-        }
-
-        if (!response.ok) throw new Error("save failed");
-        setStoreRevision(payload.revision ?? storeRevision);
-      } catch {
-        show("error", "Не удалось сохранить изменения на сервере.");
-      }
-    }, 250);
-
-    return () => window.clearTimeout(timeout);
-  }, [lastBackupAt, show, store, storeHydrated, storeRevision]);
-
-  const childrenById = useMemo(() => new Map(store.children.map((child) => [child.id, child])), [store.children]);
-  const accessCodesByCode = useMemo(
-    () => new Map(store.accessCodes.map((record) => [normalizeAccessCode(record.code), record])),
-    [store.accessCodes],
-  );
   const loggedChild = loggedChildId ? store.children.find((child) => child.id === loggedChildId) : null;
 
   const childSessions = useMemo(
@@ -1926,7 +1883,7 @@ export default function Home() {
     }
   }
 
-  function confirmBackupRestore(): void {
+  async function confirmBackupRestore(): Promise<void> {
     if (!adminUnlocked) {
       show("error", "Восстановление из резервной копии доступно только администратору.");
       return;
@@ -1946,6 +1903,11 @@ export default function Home() {
     }
 
     setStore(backupImportPreview.normalizedStore);
+    await fetch("/api/admin/import", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ store: backupImportPreview.normalizedStore, lastBackupAt: backupImportPreview.backup.exportedAt }),
+    });
     setLastBackupAt(backupImportPreview.backup.exportedAt);
     setBackupImportPreview(null);
     setLoggedChildId(null);
@@ -2140,7 +2102,7 @@ export default function Home() {
     setSelectedRegistryClass(nextClass);
   }
 
-  function confirmRegistryImport(): void {
+  async function confirmRegistryImport(): Promise<void> {
     if (!registryImportPreview) {
       show("error", "Нет данных предпросмотра для импорта.");
       return;
@@ -2247,6 +2209,11 @@ export default function Home() {
     };
 
     setStore(nextStore);
+    await fetch("/api/admin/import", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ store: nextStore, lastBackupAt }),
+    });
 
     const actionLabel =
       registryImportMode === "reset_all"
@@ -2266,7 +2233,7 @@ export default function Home() {
   }
 
 
-  function loginChild(e: FormEvent): void {
+  async function loginChild(e: FormEvent): Promise<void> {
     e.preventDefault();
     const normalizedCode = normalizeAccessCode(loginCode);
     if (!ACCESS_CODE_FORMAT.test(normalizedCode)) {
@@ -2274,28 +2241,17 @@ export default function Home() {
       return;
     }
 
-    // Canonical login source is store.accessCodes; do not depend on transient/derived child maps.
-    const codeRecord = accessCodesByCode.get(normalizedCode);
-    if (!codeRecord) {
-      show("error", "Код не найден. Проверьте ввод.");
+    const response = await fetch("/api/student/login", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ code: normalizedCode }),
+    });
+    if (!response.ok) {
+      show("error", "Код не найден или недействителен.");
       return;
     }
-
-    const child = childrenById.get(codeRecord.childId);
-    if (!child) {
-      show("error", "Ошибка состояния данных. Обратитесь к администратору.");
-      return;
-    }
-
-    const status = accessCodeStatus(codeRecord, store.sessions);
-    if (status === "Завершён") {
-      show("error", "Тестирование по этому коду уже завершено.");
-      return;
-    }
-    if (status === "Недействителен") {
-      show("error", "Код недействителен. Обратитесь к администратору.");
-      return;
-    }
+    const payload = (await response.json()) as { child: Child };
+    const child = payload.child;
 
     setRole("child");
     setLoggedChildId(child.id);
@@ -2304,16 +2260,16 @@ export default function Home() {
       console.info("[dev] child login lookup", {
         inputCode: normalizedCode,
         canonicalSource: "store.accessCodes",
-        resolvedChildId: child.id,
+        resolvedChildId: payload.child.id,
         studentId: child.registryId,
         classGroup: child.classGroup,
-        status,
+        status: "server-validated",
       });
     }
     show("ok", `Вход выполнен. Профиль: ${child.registryId}`);
   }
 
-  function startOrResume(child: Child): void {
+  async function startOrResume(child: Child): Promise<void> {
     const campaignId = child.classGroup;
     const existingCompleted = store.sessions.find(
       (session) =>
@@ -2336,7 +2292,19 @@ export default function Home() {
     );
 
     if (existingActiveOrPaused) {
-      const totalQuestions = QUESTION_SETS[existingActiveOrPaused.grade].length;
+      await fetch("/api/student/start", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          childId: child.id,
+          grade: child.grade,
+          campaignId,
+          sessionId: existingActiveOrPaused.id,
+          recommendation: existingActiveOrPaused.recommendation,
+          startedAt: existingActiveOrPaused.startedAt,
+          scores: existingActiveOrPaused.scores,
+        }),
+      });
       setStore((prev) => ({
         ...prev,
         sessions: prev.sessions.map((session) =>
@@ -2348,7 +2316,6 @@ export default function Home() {
                 pauseEvents: (session.pauseEvents ?? []).map((event) =>
                   event.resumedAt ? event : { ...event, resumedAt: new Date().toISOString() },
                 ),
-                currentQuestionIndex: clamp(session.currentQuestionIndex, 0, totalQuestions),
               }
             : session,
         ),
@@ -2372,11 +2339,24 @@ export default function Home() {
       recommendation: computeRecommendation(child.grade, zeroScores),
     };
 
+    await fetch("/api/student/start", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        childId: child.id,
+        grade: child.grade,
+        campaignId,
+        sessionId: newSession.id,
+        recommendation: newSession.recommendation,
+        startedAt: newSession.startedAt,
+        scores: newSession.scores,
+      }),
+    });
     setStore((prev) => ({ ...prev, sessions: [newSession, ...prev.sessions] }));
     show("ok", "Новая сессия запущена.");
   }
 
-  function answerQuestion(sessionId: string, selectedIndex: number): void {
+  async function answerQuestion(sessionId: string, selectedIndex: number): Promise<void> {
     const currentSession = store.sessions.find((session) => session.id === sessionId && isResumableSession(session));
     if (!currentSession) return;
 
@@ -2395,9 +2375,9 @@ export default function Home() {
     pendingAnswerBySessionRef.current = nextPending;
     setPendingAnswerBySession(nextPending);
 
-    setStore((prev) => ({
-      ...prev,
-      sessions: prev.sessions.map((session) => {
+    const nextStore = normalizeStore({
+      ...store,
+      sessions: store.sessions.map((session) => {
         if (session.id !== sessionId || !isResumableSession(session)) return session;
 
         const questions = QUESTION_SETS[session.grade];
@@ -2415,9 +2395,6 @@ export default function Home() {
 
         const nextAnswers = [...session.answers, newAnswer];
         const nextScores = computeScoresFromAnswers(session.grade, nextAnswers, session.startedAt);
-
-        // Paused sessions are resumable in the child UI, so answer clicks must both
-        // reactivate the session and persist the selected answer in the same update.
         return {
           ...session,
           status: "active",
@@ -2431,14 +2408,34 @@ export default function Home() {
           recommendation: computeRecommendation(session.grade, nextScores),
         };
       }),
-    }));
+    });
+    setStore(nextStore);
+    const updated = nextStore.sessions.find((item) => item.id === sessionId);
+    if (updated) {
+      const answered = updated.answers[updated.answers.length - 1];
+      await fetch(`/api/session/${sessionId}/answer`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          ...answered,
+          currentQuestionIndex: updated.currentQuestionIndex,
+          scores: updated.scores,
+          recommendation: updated.recommendation,
+          pauseEvents: updated.pauseEvents ?? [],
+        }),
+      });
+    }
+    const afterPending = { ...pendingAnswerBySessionRef.current };
+    delete afterPending[sessionId];
+    pendingAnswerBySessionRef.current = afterPending;
+    setPendingAnswerBySession(afterPending);
   }
 
-  function pauseSession(sessionId: string): void {
+  async function pauseSession(sessionId: string): Promise<void> {
     const pausedAt = new Date().toISOString();
-    setStore((prev) => ({
-      ...prev,
-      sessions: prev.sessions.map((session) =>
+    const nextStore = normalizeStore({
+      ...store,
+      sessions: store.sessions.map((session) =>
         session.id === sessionId && session.status !== "completed"
           ? {
               ...session,
@@ -2451,11 +2448,18 @@ export default function Home() {
             }
           : session,
       ),
-    }));
+    });
+    setStore(nextStore);
+    const session = nextStore.sessions.find((item) => item.id === sessionId);
+    await fetch(`/api/session/${sessionId}/pause`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ pausedAt, pauseEvents: session?.pauseEvents ?? [] }),
+    });
     show("ok", "Сессия сохранена и поставлена на паузу.");
   }
 
-  function completeSession(sessionId: string): void {
+  async function completeSession(sessionId: string): Promise<void> {
     const target = store.sessions.find((session) => session.id === sessionId);
     if (!target) return;
 
@@ -2477,9 +2481,9 @@ export default function Home() {
     }
 
     const completedAt = new Date().toISOString();
-    setStore((prev) => ({
-      ...prev,
-      sessions: prev.sessions.map((session) => {
+    const nextStore = normalizeStore({
+      ...store,
+      sessions: store.sessions.map((session) => {
         if (session.id !== sessionId) return session;
         const recomputedScores = computeScoresFromAnswers(session.grade, session.answers, session.startedAt);
         const finalizedPauses = finalizePauseEvents(session.pauseEvents, completedAt);
@@ -2502,16 +2506,30 @@ export default function Home() {
           adminState: "default",
         };
       }),
-    }));
+    });
+    setStore(nextStore);
+    const completed = nextStore.sessions.find((item) => item.id === sessionId);
+    await fetch(`/api/session/${sessionId}/complete`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        completedAt,
+        scores: completed?.scores ?? [],
+        pauseEvents: completed?.pauseEvents ?? [],
+        quality: completed?.quality,
+        recommendation: completed?.recommendation ?? "",
+        adminState: "default",
+      }),
+    });
     show("ok", "Сессия завершена.");
   }
 
-  function resetSession(sessionId: string): void {
-    setStore((prev) => ({
-      ...prev,
-      sessions: prev.sessions.map((session) => {
+  async function resetSession(sessionId: string): Promise<void> {
+    const restartedAt = new Date().toISOString();
+    const nextStore = normalizeStore({
+      ...store,
+      sessions: store.sessions.map((session) => {
         if (session.id !== sessionId) return session;
-        const restartedAt = new Date().toISOString();
         const freshScores = computeScoresFromAnswers(session.grade, [], restartedAt);
         return {
           ...session,
@@ -2528,14 +2546,26 @@ export default function Home() {
           adminState: "reset",
         };
       }),
-    }));
+    });
+    setStore(nextStore);
+    const session = nextStore.sessions.find((item) => item.id === sessionId);
+    await fetch(`/api/admin/session/${sessionId}/reset`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        startedAt: restartedAt,
+        scores: session?.scores ?? [],
+        recommendation: session?.recommendation ?? "",
+      }),
+    });
     show("ok", "Попытка сброшена администратором. Ученик может пройти заново.");
   }
 
-  function reopenSession(sessionId: string): void {
-    setStore((prev) => ({
-      ...prev,
-      sessions: prev.sessions.map((session) => {
+  async function reopenSession(sessionId: string): Promise<void> {
+    const pausedAt = new Date().toISOString();
+    const nextStore = normalizeStore({
+      ...store,
+      sessions: store.sessions.map((session) => {
         if (session.id !== sessionId) return session;
 
         const totalQuestions = QUESTION_SETS[session.grade].length;
@@ -2545,7 +2575,7 @@ export default function Home() {
         return {
           ...session,
           status: "paused",
-          pausedAt: new Date().toISOString(),
+          pausedAt,
           completedAt: undefined,
           answers: trimmedAnswers,
           currentQuestionIndex: clamp(trimmedAnswers.length, 0, totalQuestions),
@@ -2555,20 +2585,33 @@ export default function Home() {
           adminState: "reopened",
         };
       }),
-    }));
+    });
+    setStore(nextStore);
+    const session = nextStore.sessions.find((item) => item.id === sessionId);
+    await fetch(`/api/admin/session/${sessionId}/reopen`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        pausedAt,
+        currentQuestionIndex: session?.currentQuestionIndex ?? 0,
+        scores: session?.scores ?? [],
+        recommendation: session?.recommendation ?? "",
+        answers: session?.answers ?? [],
+      }),
+    });
     show("ok", "Попытка переоткрыта администратором.");
   }
 
-  function adminOverride(sessionId: string, text: string): void {
+  async function adminOverride(sessionId: string, text: string): Promise<void> {
     const normalized = text.trim();
     if (!normalized) {
       show("error", "Введите текст для ручной рекомендации.");
       return;
     }
 
-    setStore((prev) => ({
-      ...prev,
-      sessions: prev.sessions.map((session) =>
+    const nextStore = normalizeStore({
+      ...store,
+      sessions: store.sessions.map((session) =>
         session.id === sessionId
           ? {
               ...session,
@@ -2580,14 +2623,21 @@ export default function Home() {
             }
           : session,
       ),
-    }));
+    });
+    setStore(nextStore);
+    const session = nextStore.sessions.find((item) => item.id === sessionId);
+    await fetch(`/api/admin/review/${sessionId}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ adminOverride: session?.adminOverride }),
+    });
     show("ok", "Рекомендация администратора сохранена.");
   }
 
-  function updateSpecialistDecision(sessionId: string, decision: SpecialistFinalDecision | ""): void {
-    setStore((prev) => ({
-      ...prev,
-      sessions: prev.sessions.map((session) =>
+  async function updateSpecialistDecision(sessionId: string, decision: SpecialistFinalDecision | ""): Promise<void> {
+    const nextStore = normalizeStore({
+      ...store,
+      sessions: store.sessions.map((session) =>
         session.id === sessionId
           ? {
               ...session,
@@ -2595,21 +2645,54 @@ export default function Home() {
             }
           : session,
       ),
-    }));
+    });
+    setStore(nextStore);
+    const session = nextStore.sessions.find((item) => item.id === sessionId);
+    await fetch(`/api/admin/review/${sessionId}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        specialistFinalDecision: session?.specialistFinalDecision,
+        reviewStatus: session?.reviewStatus,
+        specialistComment: session?.specialistComment,
+      }),
+    });
   }
 
-  function updateSpecialistReviewStatus(sessionId: string, reviewStatus: SpecialistReviewStatus): void {
-    setStore((prev) => ({
-      ...prev,
-      sessions: prev.sessions.map((session) => (session.id === sessionId ? { ...session, reviewStatus } : session)),
-    }));
+  async function updateSpecialistReviewStatus(sessionId: string, reviewStatus: SpecialistReviewStatus): Promise<void> {
+    const nextStore = normalizeStore({
+      ...store,
+      sessions: store.sessions.map((session) => (session.id === sessionId ? { ...session, reviewStatus } : session)),
+    });
+    setStore(nextStore);
+    const session = nextStore.sessions.find((item) => item.id === sessionId);
+    await fetch(`/api/admin/review/${sessionId}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        specialistFinalDecision: session?.specialistFinalDecision,
+        reviewStatus: session?.reviewStatus,
+        specialistComment: session?.specialistComment,
+      }),
+    });
   }
 
-  function updateSpecialistComment(sessionId: string, comment: string): void {
-    setStore((prev) => ({
-      ...prev,
-      sessions: prev.sessions.map((session) => (session.id === sessionId ? { ...session, specialistComment: comment } : session)),
-    }));
+  async function updateSpecialistComment(sessionId: string, comment: string): Promise<void> {
+    const nextStore = normalizeStore({
+      ...store,
+      sessions: store.sessions.map((session) => (session.id === sessionId ? { ...session, specialistComment: comment } : session)),
+    });
+    setStore(nextStore);
+    const session = nextStore.sessions.find((item) => item.id === sessionId);
+    await fetch(`/api/admin/review/${sessionId}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        specialistFinalDecision: session?.specialistFinalDecision,
+        reviewStatus: session?.reviewStatus,
+        specialistComment: session?.specialistComment,
+      }),
+    });
   }
 
   const completedSessions = store.sessions.filter((session) => session.status === "completed");
