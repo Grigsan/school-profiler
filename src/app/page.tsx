@@ -1116,14 +1116,20 @@ function parseBooleanSafe(rawValue: string): boolean | null {
   return null;
 }
 
-function downloadText(content: string, filename: string, mimeType: string): void {
-  const blob = new Blob([content], { type: mimeType });
+type DownloadableContent = string | Blob;
+
+function downloadFile(content: DownloadableContent, filename: string, mimeType?: string): void {
+  const blob = content instanceof Blob ? content : new Blob([content], { type: mimeType ?? "text/plain;charset=utf-8" });
   const url = URL.createObjectURL(blob);
   const link = document.createElement("a");
   link.href = url;
   link.download = filename;
   link.click();
   URL.revokeObjectURL(url);
+}
+
+function downloadText(content: string, filename: string, mimeType: string): void {
+  downloadFile(content, filename, mimeType);
 }
 
 function sanitizeFilePart(value: string): string {
@@ -1200,11 +1206,11 @@ function crc32(data: Uint8Array): number {
   return (crc ^ 0xffffffff) >>> 0;
 }
 
-function zipFiles(files: Array<{ name: string; content: string }>): Blob {
+function zipFiles(files: Array<{ name: string; content: string | Uint8Array }>): Blob {
   const encoder = new TextEncoder();
   const fileEntries = files.map((file) => {
     const nameBytes = encoder.encode(file.name);
-    const dataBytes = encoder.encode(file.content);
+    const dataBytes = typeof file.content === "string" ? encoder.encode(file.content) : file.content;
     return { ...file, nameBytes, dataBytes, crc: crc32(dataBytes) };
   });
   const chunks: Uint8Array[] = [];
@@ -1340,12 +1346,99 @@ async function downloadXlsx(sheets: Array<{ name: string; rows: string[][] }>, f
     ...worksheetFiles,
   ];
   const blob = zipFiles(workbookFiles);
-  const url = URL.createObjectURL(blob);
-  const link = document.createElement("a");
-  link.href = url;
-  link.download = filename;
-  link.click();
-  URL.revokeObjectURL(url);
+  downloadFile(blob, filename);
+}
+
+const PRINT_HEIGHT_CLASS_MAP: Record<string, string> = {
+  "h-56": "224px",
+  "h-64": "256px",
+  "h-72": "288px",
+  "h-80": "320px",
+  "h-[28rem]": "448px",
+};
+
+function applyPrintFriendlyLayout(root: HTMLElement): void {
+  root.querySelectorAll<HTMLElement>("[class]").forEach((element) => {
+    const classText = element.className;
+    if (typeof classText !== "string") return;
+
+    if (/(^|\s)grid(\s|$)/.test(classText)) {
+      element.style.display = "block";
+    }
+
+    if (classText.includes("overflow-x-auto")) {
+      element.style.overflow = "visible";
+    }
+
+    Object.entries(PRINT_HEIGHT_CLASS_MAP).forEach(([token, height]) => {
+      if (classText.includes(token)) {
+        element.style.height = height;
+        element.style.minHeight = height;
+      }
+    });
+  });
+
+  root.querySelectorAll<HTMLElement>(".recharts-responsive-container").forEach((container) => {
+    container.style.width = "100%";
+    container.style.height = "100%";
+    container.style.minHeight = "220px";
+  });
+
+  root.querySelectorAll<HTMLElement>("svg, .recharts-wrapper").forEach((element) => {
+    element.style.transform = "none";
+    element.style.position = "relative";
+  });
+
+  root.querySelectorAll<HTMLElement>("[data-print-chart]").forEach((card) => {
+    card.classList.add("print-chart-card");
+  });
+}
+
+function clonePrintMarkup(ref: RefObject<HTMLDivElement | null>): string {
+  if (!ref.current) return "";
+  const cloned = ref.current.cloneNode(true) as HTMLDivElement;
+  applyPrintFriendlyLayout(cloned);
+  return cloned.innerHTML;
+}
+
+function blobToUint8Array(blob: Blob): Promise<Uint8Array> {
+  return blob.arrayBuffer().then((buffer) => new Uint8Array(buffer));
+}
+
+async function svgToPngBytes(svgElement: SVGSVGElement): Promise<Uint8Array | null> {
+  const rect = svgElement.getBoundingClientRect();
+  const width = Math.max(640, Math.round(rect.width || Number(svgElement.getAttribute("width")) || 640));
+  const height = Math.max(360, Math.round(rect.height || Number(svgElement.getAttribute("height")) || 360));
+  const clone = svgElement.cloneNode(true) as SVGSVGElement;
+  clone.setAttribute("xmlns", "http://www.w3.org/2000/svg");
+  clone.setAttribute("width", String(width));
+  clone.setAttribute("height", String(height));
+  clone.setAttribute("viewBox", clone.getAttribute("viewBox") || `0 0 ${width} ${height}`);
+  const svgText = new XMLSerializer().serializeToString(clone);
+  const svgBlob = new Blob([svgText], { type: "image/svg+xml;charset=utf-8" });
+  const url = URL.createObjectURL(svgBlob);
+
+  try {
+    const image = await new Promise<HTMLImageElement>((resolve, reject) => {
+      const img = new Image();
+      img.onload = () => resolve(img);
+      img.onerror = () => reject(new Error("Не удалось загрузить SVG."));
+      img.src = url;
+    });
+    const canvas = document.createElement("canvas");
+    canvas.width = width;
+    canvas.height = height;
+    const context = canvas.getContext("2d");
+    if (!context) return null;
+    context.fillStyle = "#0f172a";
+    context.fillRect(0, 0, width, height);
+    context.drawImage(image, 0, 0, width, height);
+    const pngBlob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, "image/png"));
+    if (!pngBlob) return null;
+    return blobToUint8Array(pngBlob);
+  } finally {
+    URL.revokeObjectURL(url);
+  }
 }
 
 function printHtmlReport(title: string, htmlContent: string): boolean {
@@ -1359,11 +1452,18 @@ function printHtmlReport(title: string, htmlContent: string): boolean {
         <meta name="viewport" content="width=device-width, initial-scale=1" />
         <title>${title}</title>
         <style>
+          @page { size: A4; margin: 14mm; }
           body { font-family: Arial, Helvetica, sans-serif; color: #0f172a; background: #fff; margin: 20px; line-height: 1.4; }
           h1,h2,h3 { margin: 0 0 10px; color: #0f172a; }
           table { border-collapse: collapse; width: 100%; margin: 12px 0; }
           th, td { border: 1px solid #cbd5e1; padding: 8px; vertical-align: top; text-align: left; font-size: 12px; }
           .print-section { margin-bottom: 20px; }
+          .print-chart-card { page-break-inside: avoid; break-inside: avoid; margin: 0 0 16px; border: 1px solid #cbd5e1; padding: 10px; }
+          .print-major-section { page-break-before: always; break-before: page; }
+          .recharts-responsive-container { width: 100% !important; min-height: 220px !important; height: 220px !important; }
+          .recharts-wrapper, .recharts-surface, svg { max-width: 100% !important; overflow: visible !important; }
+          [class*="grid"] { display: block !important; }
+          [class*="overflow-x-auto"] { overflow: visible !important; }
           ul { margin: 8px 0 0; }
         </style>
       </head>
@@ -1574,7 +1674,9 @@ export default function Home() {
   const [decisionFilterCompletion, setDecisionFilterCompletion] = useState<DecisionCompletionStatus | "все">("все");
   const [decisionSortBy, setDecisionSortBy] = useState<"student_id" | "completion" | "review_status" | "expert_needed">("student_id");
   const individualReportRef = useRef<HTMLDivElement | null>(null);
+  const individualChartsRef = useRef<HTMLDivElement | null>(null);
   const classSummaryRef = useRef<HTMLDivElement | null>(null);
+  const classChartsRef = useRef<HTMLDivElement | null>(null);
 
   function show(type: "ok" | "error", text: string): void {
     setMessage({ type, text });
@@ -1582,7 +1684,7 @@ export default function Home() {
   }
 
   function printFromRef(ref: RefObject<HTMLDivElement | null>, title: string): void {
-    const html = ref.current?.innerHTML;
+    const html = clonePrintMarkup(ref);
     if (!html) {
       show("error", "Нет данных для печати.");
       return;
@@ -1594,6 +1696,44 @@ export default function Home() {
       return;
     }
     show("ok", "Печатная версия открыта.");
+  }
+
+  async function exportChartsZip(
+    containerRef: RefObject<HTMLDivElement | null>,
+    zipName: string,
+    explanationFileName: string,
+    explanationLines: string[],
+  ): Promise<void> {
+    const container = containerRef.current;
+    if (!container) {
+      show("error", "Графики ещё не готовы к экспорту.");
+      return;
+    }
+    const chartCards = Array.from(container.querySelectorAll<HTMLElement>("[data-chart-export]"));
+    if (!chartCards.length) {
+      show("error", "В текущем разделе нет графиков для экспорта.");
+      return;
+    }
+
+    const files: Array<{ name: string; content: string | Uint8Array }> = [];
+    for (const [index, card] of chartCards.entries()) {
+      const svg = card.querySelector<SVGSVGElement>("svg");
+      if (!svg) continue;
+      const pngBytes = await svgToPngBytes(svg);
+      if (!pngBytes) continue;
+      const rawName = card.dataset.chartExport || `grafik-${index + 1}`;
+      files.push({ name: `${sanitizeFilePart(rawName)}.png`, content: pngBytes });
+    }
+
+    if (!files.length) {
+      show("error", "Не удалось сформировать PNG-файлы графиков.");
+      return;
+    }
+
+    files.push({ name: explanationFileName, content: `\uFEFF${explanationLines.join("\r\n")}` });
+    const zipBlob = zipFiles(files);
+    downloadFile(zipBlob, zipName);
+    show("ok", `Подготовлен архив: ${zipName}`);
   }
 
   function exportFullBackup(): void {
@@ -2962,6 +3102,52 @@ export default function Home() {
     });
   }, [completedSessions, selectedAnalyticsClass]);
 
+  const individualChartExplanationLines = useMemo(() => {
+    if (!selectedReportSession) return ["Индивидуальный отчёт недоступен."];
+    const childLabel = selectedReportChild?.registryId ?? "ANON-001";
+    const quality = selectedReportSession.quality ?? computeAttemptQuality(selectedReportSession);
+    const domainLines = BATTERIES[selectedReportSession.grade].map((battery) => {
+      const score = selectedReportSession.scores.find((item) => item.batteryId === battery.id);
+      const notes = subskillDiagnostics(
+        selectedReportSession.grade,
+        selectedReportSession.answers.filter((answer) => answer.batteryId === battery.id),
+        battery.id,
+      );
+      return `- ${battery.shortTitle}: ${score?.scaledScore ?? 0}/10, ${score?.interpretation ?? "без интерпретации"}; субнавыки: ${
+        notes.length ? notes.join(" ") : "Недостаточно данных."
+      }`;
+    });
+    return [
+      `Индивидуальный отчёт: ${childLabel}, класс ${selectedReportSession.campaignId}.`,
+      `Краткий профиль: ${
+        childProfileSummary
+          ? `сильнейшая зона — ${childProfileSummary.strongest.domain}, слабейшая — ${childProfileSummary.weakest.domain}.`
+          : "недостаточно данных для профиля."
+      }`,
+      `Качество прохождения: ${quality.status}. ${quality.explanation}`,
+      "Интерпретации по доменам и субнавыкам:",
+      ...domainLines,
+      `Итоговая рекомендация: ${selectedReportSession.recommendation || "—"}.`,
+    ];
+  }, [childProfileSummary, selectedReportChild?.registryId, selectedReportSession]);
+
+  const classChartExplanationLines = useMemo(() => {
+    const summary = selectedClassSummary;
+    if (!summary) return ["Сводка класса недоступна."];
+    const recommendationText = summary.recommendationDistribution.length
+      ? summary.recommendationDistribution.map((item) => `${item.label}: ${item.count}`).join("; ")
+      : "рекомендации пока отсутствуют.";
+    return [
+      `Сводка класса ${summary.classGroup}.`,
+      `Классовая сводка: завершили ${summary.completed} из ${summary.totalStudents}, на паузе ${summary.paused}, требуют экспертного разбора ${summary.expertReviewNeeded}.`,
+      `Распределение рекомендаций: ${recommendationText}`,
+      `Распределение качества: ${summary.qualityDistribution.map((item) => `${item.label}: ${item.count}`).join("; ")}.`,
+      `Трудные домены: ${summary.domainDifficultyHighlights.join(" | ")}.`,
+      `Трудные субнавыки: ${summary.subskillDifficultyHighlights.join(" | ")}.`,
+      "Контекст решений: диаграммы используются в рабочем обсуждении итоговых рекомендаций и статусов рассмотрения.",
+    ];
+  }, [selectedClassSummary]);
+
   const correlationData = useMemo(() => {
     const rows = completedSessions.map((session) => {
       const intelligence = session.scores.find((score) => score.batteryId.includes("intelligence"));
@@ -3551,6 +3737,36 @@ export default function Home() {
                           >
                             Печатная версия
                           </button>
+                          <button
+                            className={buttonSecondaryClass}
+                            onClick={() => {
+                              if (!selectedReportExportRows.length) {
+                                show("error", "Нет данных для CSV-выгрузки.");
+                                return;
+                              }
+                              const childId = sanitizeFilePart(child?.registryId ?? "anon-001");
+                              downloadCsv(selectedReportExportRows, `tablitsa-rezultatov-rebenok-${childId}.csv`);
+                              show("ok", "Таблица индивидуального отчёта сохранена как CSV.");
+                            }}
+                            type="button"
+                          >
+                            Скачать таблицу результатов (CSV)
+                          </button>
+                          <button
+                            className={buttonSecondaryClass}
+                            onClick={() => {
+                              const childId = sanitizeFilePart(child?.registryId ?? "ANON-001");
+                              void exportChartsZip(
+                                individualChartsRef,
+                                `grafiki-otcheta-${childId}.zip`,
+                                `poyasneniya-${childId}.txt`,
+                                individualChartExplanationLines,
+                              );
+                            }}
+                            type="button"
+                          >
+                            Скачать графики отчёта (ZIP)
+                          </button>
                         </div>
                         <div ref={individualReportRef} className="space-y-3 rounded-md border border-slate-700 bg-slate-900 p-3">
                         <dl className="grid gap-2 text-sm md:grid-cols-2">
@@ -3636,8 +3852,9 @@ export default function Home() {
                           </p>
                         </div>
 
+                        <div ref={individualChartsRef} className="space-y-3 print-major-section">
                         <div className="grid gap-3 md:grid-cols-2">
-                          <div className="rounded-md border border-slate-700 bg-slate-950/70 p-3">
+                          <div data-print-chart data-chart-export={`grafik-radar-rebenok-${sanitizeFilePart(child?.registryId ?? "ANON-001")}`} className="rounded-md border border-slate-700 bg-slate-950/70 p-3">
                             <p className="mb-2 text-sm font-semibold">Профиль доменов (radar, scaled)</p>
                             <div className="h-64">
                               <ResponsiveContainer width="100%" height="100%">
@@ -3669,7 +3886,7 @@ export default function Home() {
                           </div>
                         </div>
 
-                        <div className="rounded-md border border-slate-700 bg-slate-950/70 p-3">
+                        <div data-print-chart data-chart-export={`grafik-sravnenie-raw-scaled-vremya-${sanitizeFilePart(child?.registryId ?? "ANON-001")}`} className="rounded-md border border-slate-700 bg-slate-950/70 p-3">
                           <p className="mb-2 text-sm font-semibold">Сравнение доменов: raw / scaled / время (нормировано)</p>
                           <div className="h-72">
                             <ResponsiveContainer width="100%" height="100%">
@@ -3687,7 +3904,7 @@ export default function Home() {
                           </div>
                         </div>
 
-                        <div className="rounded-md border border-slate-700 bg-slate-950/70 p-3">
+                        <div data-print-chart data-chart-export={`grafik-vremya-po-domenam-${sanitizeFilePart(child?.registryId ?? "ANON-001")}`} className="rounded-md border border-slate-700 bg-slate-950/70 p-3">
                           <p className="mb-2 text-sm font-semibold">Время по доменам</p>
                           <div className="h-64">
                             <ResponsiveContainer width="100%" height="100%">
@@ -3705,7 +3922,12 @@ export default function Home() {
                         <div className="space-y-3 rounded-md border border-slate-700 bg-slate-950/70 p-3">
                           <p className="text-sm font-semibold">Субнавыковый профиль по доменам</p>
                           {childSubskillByDomain.map((domainItem) => (
-                            <div key={`subskill-${domainItem.domain}`} className="rounded-md border border-slate-700 bg-slate-900 p-2">
+                            <div
+                              key={`subskill-${domainItem.domain}`}
+                              data-print-chart
+                              data-chart-export={`grafik-subnavyki-${sanitizeFilePart(domainItem.domain)}-${sanitizeFilePart(child?.registryId ?? "ANON-001")}`}
+                              className="rounded-md border border-slate-700 bg-slate-900 p-2"
+                            >
                               <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-300">{domainItem.domain}</p>
                               <div className="h-56">
                                 <ResponsiveContainer width="100%" height="100%">
@@ -3720,6 +3942,7 @@ export default function Home() {
                               </div>
                             </div>
                           ))}
+                        </div>
                         </div>
                       </div>
                       </div>
@@ -3933,6 +4156,36 @@ export default function Home() {
                 >
                   Печатная версия сводки
                 </button>
+                <button
+                  className={buttonSecondaryClass}
+                  onClick={() => {
+                    if (!selectedClassSummaryExportRows.length) {
+                      show("error", "Нет данных для CSV-выгрузки сводки.");
+                      return;
+                    }
+                    const classPart = sanitizeFilePart(selectedAnalyticsClass);
+                    downloadCsv(selectedClassSummaryExportRows, `svodnaya-tablitsa-klassa-${classPart}.csv`);
+                    show("ok", `Сводная таблица ${selectedAnalyticsClass} сохранена как CSV.`);
+                  }}
+                  type="button"
+                >
+                  Скачать сводную таблицу класса (CSV)
+                </button>
+                <button
+                  className={buttonSecondaryClass}
+                  onClick={() => {
+                    const classPart = sanitizeFilePart(selectedAnalyticsClass);
+                    void exportChartsZip(
+                      classChartsRef,
+                      `grafiki-klassa-${classPart}.zip`,
+                      `poyasneniya-klassa-${classPart}.txt`,
+                      classChartExplanationLines,
+                    );
+                  }}
+                  type="button"
+                >
+                  Скачать графики класса (ZIP)
+                </button>
               </div>
               <div ref={classSummaryRef} className="space-y-3 text-sm">
                 {selectedClassSummary && (
@@ -4006,8 +4259,9 @@ export default function Home() {
                   Ниже — визуализации по выбранному классу, используемые как часть рабочей сводки специалиста, а не отдельный аналитический экран.
                 </p>
               </div>
+              <div ref={classChartsRef} className="space-y-3 print-major-section">
               <div className="mt-4 grid gap-3 md:grid-cols-2">
-                <div className="rounded-md border border-slate-700 bg-slate-950/70 p-3">
+                <div data-print-chart data-chart-export={`grafik-raspredelenie-scaled-${sanitizeFilePart(selectedAnalyticsClass)}`} className="rounded-md border border-slate-700 bg-slate-950/70 p-3">
                   <p className="mb-2 text-sm font-semibold">Распределение scaled по доменам (выбранный класс)</p>
                   <div className="h-72">
                     <ResponsiveContainer width="100%" height="100%">
@@ -4021,7 +4275,7 @@ export default function Home() {
                     </ResponsiveContainer>
                   </div>
                 </div>
-                <div className="rounded-md border border-slate-700 bg-slate-950/70 p-3">
+                <div data-print-chart data-chart-export={`grafik-srednie-scaled-${sanitizeFilePart(selectedAnalyticsClass)}`} className="rounded-md border border-slate-700 bg-slate-950/70 p-3">
                   <p className="mb-2 text-sm font-semibold">Средние scaled по доменам (выбранный класс)</p>
                   <div className="h-72">
                     <ResponsiveContainer width="100%" height="100%">
@@ -4037,7 +4291,7 @@ export default function Home() {
                 </div>
               </div>
               <div className="mt-3 grid gap-3 md:grid-cols-2">
-                <div className="rounded-md border border-slate-700 bg-slate-950/70 p-3">
+                <div data-print-chart data-chart-export={`grafik-raspredelenie-rekomendaciy-${sanitizeFilePart(selectedAnalyticsClass)}`} className="rounded-md border border-slate-700 bg-slate-950/70 p-3">
                   <p className="mb-2 text-sm font-semibold">Распределение маршрутов рекомендаций</p>
                   <div className="h-72">
                     <ResponsiveContainer width="100%" height="100%">
@@ -4051,7 +4305,7 @@ export default function Home() {
                     </ResponsiveContainer>
                   </div>
                 </div>
-                <div className="rounded-md border border-slate-700 bg-slate-950/70 p-3">
+                <div data-print-chart data-chart-export={`grafik-statusy-klassa-${sanitizeFilePart(selectedAnalyticsClass)}`} className="rounded-md border border-slate-700 bg-slate-950/70 p-3">
                   <p className="mb-2 text-sm font-semibold">Статус выполнения по классу</p>
                   <div className="h-72">
                     <ResponsiveContainer width="100%" height="100%">
@@ -4066,7 +4320,7 @@ export default function Home() {
                   </div>
                 </div>
               </div>
-              <div className="mt-3 rounded-md border border-slate-700 bg-slate-950/70 p-3">
+              <div data-print-chart data-chart-export={`grafik-kachestvo-klassa-${sanitizeFilePart(selectedAnalyticsClass)}`} className="mt-3 rounded-md border border-slate-700 bg-slate-950/70 p-3">
                 <p className="mb-2 text-sm font-semibold">Распределение качества прохождения по классу</p>
                 <div className="h-72">
                   <ResponsiveContainer width="100%" height="100%">
@@ -4081,7 +4335,7 @@ export default function Home() {
                 </div>
               </div>
               <div className="mt-3 grid gap-3 md:grid-cols-2">
-                <div className="rounded-md border border-slate-700 bg-slate-950/70 p-3">
+                <div data-print-chart data-chart-export={`grafik-subnavyki-klassa-${sanitizeFilePart(selectedAnalyticsClass)}`} className="rounded-md border border-slate-700 bg-slate-950/70 p-3">
                   <p className="mb-2 text-sm font-semibold">Субнавыки класса: средняя точность</p>
                   <div className="h-80">
                     <ResponsiveContainer width="100%" height="100%">
@@ -4095,7 +4349,7 @@ export default function Home() {
                     </ResponsiveContainer>
                   </div>
                 </div>
-                <div className="rounded-md border border-slate-700 bg-slate-950/70 p-3">
+                <div data-print-chart data-chart-export={`grafik-sravnenie-paralleley-${sanitizeFilePart(selectedAnalyticsClass)}`} className="rounded-md border border-slate-700 bg-slate-950/70 p-3">
                   <p className="mb-2 text-sm font-semibold">
                     Сравнение параллелей: {gradeFromClassGroup(selectedAnalyticsClass) === 4 ? "4А vs 4Б" : "6А vs 6Б"}
                   </p>
@@ -4122,6 +4376,7 @@ export default function Home() {
                     </ResponsiveContainer>
                   </div>
                 </div>
+              </div>
               </div>
               </div>
             </article>
@@ -4267,6 +4522,17 @@ export default function Home() {
                   type="button"
                 >
                   Скачать таблицу решений (XLSX)
+                </button>
+                <button
+                  className={buttonSecondaryClass}
+                  onClick={() => {
+                    const classPart = sanitizeFilePart(selectedDecisionClass);
+                    downloadCsv(classDecisionExportRows, `tablitsa-resheniy-klassa-${classPart}.csv`);
+                    show("ok", `Таблица решений ${selectedDecisionClass} сохранена как CSV.`);
+                  }}
+                  type="button"
+                >
+                  Скачать таблицу решений (CSV)
                 </button>
               </div>
 
@@ -4414,7 +4680,7 @@ export default function Home() {
                   }}
                   type="button"
                 >
-                  Скачать итоговую таблицу (CSV)
+                  Скачать таблицу результатов (CSV)
                 </button>
               </div>
               <div className="overflow-x-auto rounded-md border border-slate-700">
@@ -4471,7 +4737,7 @@ export default function Home() {
                   }}
                   type="button"
                 >
-                  Скачать сводку классов (CSV)
+                  Скачать сводную таблицу класса (CSV)
                 </button>
               </div>
               <div className="overflow-x-auto rounded-md border border-slate-700">
