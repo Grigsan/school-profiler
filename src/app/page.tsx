@@ -373,6 +373,10 @@ function isResumableSession(session: Session): boolean {
   return session.status === "active" || session.status === "paused";
 }
 
+function isSessionInProgress(session: Session): boolean {
+  return session.status === "active" || session.status === "paused";
+}
+
 function clamp(value: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, value));
 }
@@ -1250,6 +1254,11 @@ function getCurrentCycleBaselineAt(children: Child[], accessCodes: AccessCodeRec
   return valid[0]?.value ?? null;
 }
 
+function warnDevLocalStorageFailure(action: "read" | "write" | "remove", key: string, error: unknown): void {
+  if (process.env.NODE_ENV === "production") return;
+  console.warn(`[dev] failed to ${action} localStorage key "${key}"`, error);
+}
+
 function isSessionComplete(session: Session): boolean {
   const gradeQuestions = QUESTION_SETS[session.grade];
   const allAnswered = session.answers.length >= gradeQuestions.length;
@@ -1293,7 +1302,12 @@ export default function Home() {
   const [isImportingBackup, setIsImportingBackup] = useState(false);
   const [lastBackupAt, setLastBackupAt] = useState<string | null>(() => {
     if (typeof window === "undefined") return null;
-    return window.localStorage.getItem(LAST_BACKUP_AT_STORAGE_KEY);
+    try {
+      return window.localStorage.getItem(LAST_BACKUP_AT_STORAGE_KEY);
+    } catch (error) {
+      warnDevLocalStorageFailure("read", LAST_BACKUP_AT_STORAGE_KEY, error);
+      return null;
+    }
   });
   const [loginCode, setLoginCode] = useState("");
   const [loggedChildId, setLoggedChildId] = useState<string | null>(null);
@@ -1312,11 +1326,15 @@ export default function Home() {
 
   useEffect(() => {
     if (typeof window === "undefined") return;
-    if (!lastBackupAt) {
-      window.localStorage.removeItem(LAST_BACKUP_AT_STORAGE_KEY);
-      return;
+    try {
+      if (!lastBackupAt) {
+        window.localStorage.removeItem(LAST_BACKUP_AT_STORAGE_KEY);
+        return;
+      }
+      window.localStorage.setItem(LAST_BACKUP_AT_STORAGE_KEY, lastBackupAt);
+    } catch (error) {
+      warnDevLocalStorageFailure(lastBackupAt ? "write" : "remove", LAST_BACKUP_AT_STORAGE_KEY, error);
     }
-    window.localStorage.setItem(LAST_BACKUP_AT_STORAGE_KEY, lastBackupAt);
   }, [lastBackupAt]);
 
   const childrenById = useMemo(() => new Map(store.children.map((child) => [child.id, child])), [store.children]);
@@ -2169,11 +2187,13 @@ export default function Home() {
     const importedChildrenById = new Set(importedChildren.map((child) => child.id));
     const importedSessions = store.sessions.filter((session) => importedChildrenById.has(session.childId));
     const completedImportedSessions = importedSessions.filter((session) => session.status === "completed");
-    const pausedImportedSessions = importedSessions.filter((session) => session.status === "paused");
+    const inProgressImportedSessions = importedSessions.filter((session) => isSessionInProgress(session));
     const issuedCodes = store.accessCodes.filter((code) => importedChildrenById.has(code.childId));
     const issuedCodeStatuses = issuedCodes.map((code) => accessCodeStatus(code, store.sessions));
     const activeCodesCount = issuedCodeStatuses.filter((status) => isCodeUsableInCurrentCycle(status)).length;
     const childrenWithSession = new Set(importedSessions.map((session) => session.childId));
+    const hasStartedSessions = importedSessions.length > 0;
+    const hasCompletedSessions = completedImportedSessions.length > 0;
     const notStartedCount = importedChildren.filter((child) => !childrenWithSession.has(child.id)).length;
     const pendingReviewCount = completedImportedSessions.filter((session) => session.reviewStatus !== "решение принято").length;
     const finalizedCount = completedImportedSessions.filter((session) => session.reviewStatus === "решение принято").length;
@@ -2192,7 +2212,7 @@ export default function Home() {
         .filter((status) => isCodeUsableInCurrentCycle(status));
       const classSessions = importedSessions.filter((session) => session.campaignId === group);
       const classCompleted = classSessions.filter((session) => session.status === "completed");
-      const classPaused = classSessions.filter((session) => session.status === "paused");
+      const classInProgress = classSessions.filter((session) => isSessionInProgress(session));
       const classPendingReviews = classCompleted.filter((session) => session.reviewStatus !== "решение принято");
       const classFinalized = classCompleted.filter((session) => session.reviewStatus === "решение принято");
       return {
@@ -2200,7 +2220,7 @@ export default function Home() {
         importedStudents: classChildren.length,
         activeCodes: classCodes.length,
         completedSessions: classCompleted.length,
-        pausedSessions: classPaused.length,
+        inProgressSessions: classInProgress.length,
         pendingReviews: classPendingReviews.length,
         finalizedDecisions: classFinalized.length,
       };
@@ -2212,27 +2232,29 @@ export default function Home() {
       if (row.importedStudents > 0 && row.activeCodes === 0) {
         statusMessages.push(`Для класса ${row.classGroup} отсутствуют активные коды доступа из реестра.`);
       }
-      if (row.pausedSessions > 0) {
+      if (row.inProgressSessions > 0) {
         statusMessages.push(`Для класса ${row.classGroup} есть незавершённые попытки.`);
       }
     });
     if (!importedChildren.length) criticalSteps.push("Реестр класса не загружен.");
     if (activeCodesCount === 0) criticalSteps.push("Нет активных кодов доступа.");
-    if (completedImportedSessions.length === 0) criticalSteps.push("Нет завершённых попыток тестирования.");
+    if (!hasStartedSessions) criticalSteps.push("Тестирование в текущем цикле ещё не начиналось.");
+    if (!hasCompletedSessions) criticalSteps.push("Нет завершённых попыток тестирования.");
     if (notStartedCount > 0) criticalSteps.push("Есть ученики, которые ещё не начинали тестирование.");
-    if (pausedImportedSessions.length > 0) criticalSteps.push("Остались незавершённые попытки.");
+    if (inProgressImportedSessions.length > 0) criticalSteps.push("Остались незавершённые попытки.");
     if (pendingReviewCount > 0) criticalSteps.push("Не все решения приняты.");
     if (pendingReviewCount > 0) statusMessages.push("Есть результаты без финального решения.");
-    if (completedImportedSessions.length > 0 && !hasBackup) statusMessages.push("Рекомендуется сохранить резервную копию.");
+    if (hasCompletedSessions && !hasBackup) statusMessages.push("Рекомендуется сохранить резервную копию.");
 
     const cycleStatusLines: string[] = [];
-    if (completedImportedSessions.length === 0) cycleStatusLines.push("Тестирование ещё не завершалось");
+    if (!hasStartedSessions) cycleStatusLines.push("Тестирование ещё не начато");
+    if (!hasCompletedSessions) cycleStatusLines.push("Тестирование ещё не завершалось");
     if (notStartedCount > 0) cycleStatusLines.push("Есть ученики, которые ещё не начинали тестирование");
-    if (pausedImportedSessions.length > 0) cycleStatusLines.push("Остались незавершённые попытки");
+    if (inProgressImportedSessions.length > 0) cycleStatusLines.push("Остались незавершённые попытки");
     if (pendingReviewCount > 0) cycleStatusLines.push("Не все решения приняты");
-    if (completedImportedSessions.length > 0 && !hasBackup) cycleStatusLines.push("Рекомендуется сохранить резервную копию");
+    if (hasCompletedSessions && !hasBackup) cycleStatusLines.push("Рекомендуется сохранить резервную копию");
     if (!importedChildren.length || activeCodesCount === 0) cycleStatusLines.push("Рабочий цикл не завершён");
-    const cycleCompleted = cycleStatusLines.length === 0;
+    const cycleCompleted = hasStartedSessions && hasCompletedSessions && cycleStatusLines.length === 0;
     if (cycleCompleted) {
       cycleStatusLines.push("Текущий цикл можно считать завершённым.");
       statusMessages.push("Текущий цикл можно считать завершённым.");
@@ -2248,7 +2270,7 @@ export default function Home() {
       issuedCodesCount: issuedCodes.length,
       activeCodesCount,
       completedSessionsCount: completedImportedSessions.length,
-      pausedSessionsCount: pausedImportedSessions.length,
+      inProgressSessionsCount: inProgressImportedSessions.length,
       notStartedCount,
       pendingReviewCount,
       finalizedCount,
@@ -2959,7 +2981,7 @@ export default function Home() {
                   Завершённых сессий: <strong>{cycleReadiness.completedSessionsCount}</strong>
                 </p>
                 <p className="rounded-md border border-slate-700 bg-slate-950 p-3">
-                  На паузе: <strong>{cycleReadiness.pausedSessionsCount}</strong>
+                  Незавершённые (активные + на паузе): <strong>{cycleReadiness.inProgressSessionsCount}</strong>
                 </p>
                 <p className="rounded-md border border-slate-700 bg-slate-950 p-3">
                   Ещё не начато: <strong>{cycleReadiness.notStartedCount}</strong>
@@ -3003,7 +3025,7 @@ export default function Home() {
                         <li>Учеников в реестре: {item.importedStudents}</li>
                         <li>Активных кодов: {item.activeCodes}</li>
                         <li>Завершённых сессий: {item.completedSessions}</li>
-                        <li>На паузе: {item.pausedSessions}</li>
+                        <li>Незавершённых (активные + на паузе): {item.inProgressSessions}</li>
                         <li>Ожидают рассмотрения: {item.pendingReviews}</li>
                         <li>Финализировано решений: {item.finalizedDecisions}</li>
                       </ul>
