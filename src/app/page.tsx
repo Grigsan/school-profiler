@@ -1126,6 +1126,245 @@ function downloadText(content: string, filename: string, mimeType: string): void
   URL.revokeObjectURL(url);
 }
 
+const CSV_DELIMITER = ";";
+
+function escapeCsvCell(value: string): string {
+  const normalized = String(value ?? "");
+  if (normalized.includes("\"") || normalized.includes("\n") || normalized.includes(CSV_DELIMITER)) {
+    return `"${normalized.replaceAll("\"", "\"\"")}"`;
+  }
+  return normalized;
+}
+
+function downloadCsv(rows: string[][], filename: string): void {
+  const content = rows.map((row) => row.map((cell) => escapeCsvCell(cell)).join(CSV_DELIMITER)).join("\r\n");
+  const bom = "\uFEFF";
+  downloadText(`${bom}${content}`, filename, "text/csv;charset=utf-8");
+}
+
+function escapeXml(value: string): string {
+  return value
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll("\"", "&quot;")
+    .replaceAll("'", "&apos;");
+}
+
+function excelColumn(index: number): string {
+  let value = index + 1;
+  let result = "";
+  while (value > 0) {
+    const rem = (value - 1) % 26;
+    result = String.fromCharCode(65 + rem) + result;
+    value = Math.floor((value - 1) / 26);
+  }
+  return result;
+}
+
+function toUint8(content: string): Uint8Array {
+  return new TextEncoder().encode(content);
+}
+
+const CRC32_TABLE = (() => {
+  const table = new Uint32Array(256);
+  for (let i = 0; i < 256; i += 1) {
+    let c = i;
+    for (let k = 0; k < 8; k += 1) {
+      c = (c & 1) ? (0xedb88320 ^ (c >>> 1)) : (c >>> 1);
+    }
+    table[i] = c >>> 0;
+  }
+  return table;
+})();
+
+function crc32(data: Uint8Array): number {
+  let crc = 0xffffffff;
+  for (let i = 0; i < data.length; i += 1) {
+    crc = CRC32_TABLE[(crc ^ data[i]) & 0xff] ^ (crc >>> 8);
+  }
+  return (crc ^ 0xffffffff) >>> 0;
+}
+
+type ZipEntry = { name: string; data: Uint8Array };
+
+function zipStore(entries: ZipEntry[]): Uint8Array {
+  const localParts: Uint8Array[] = [];
+  const centralParts: Uint8Array[] = [];
+  let offset = 0;
+
+  entries.forEach((entry) => {
+    const nameBytes = toUint8(entry.name);
+    const data = entry.data;
+    const crc = crc32(data);
+    const size = data.length;
+
+    const localHeader = new Uint8Array(30 + nameBytes.length);
+    const localView = new DataView(localHeader.buffer);
+    localView.setUint32(0, 0x04034b50, true);
+    localView.setUint16(4, 20, true);
+    localView.setUint16(6, 0, true);
+    localView.setUint16(8, 0, true);
+    localView.setUint16(10, 0, true);
+    localView.setUint16(12, 0, true);
+    localView.setUint32(14, crc, true);
+    localView.setUint32(18, size, true);
+    localView.setUint32(22, size, true);
+    localView.setUint16(26, nameBytes.length, true);
+    localView.setUint16(28, 0, true);
+    localHeader.set(nameBytes, 30);
+
+    localParts.push(localHeader, data);
+
+    const centralHeader = new Uint8Array(46 + nameBytes.length);
+    const centralView = new DataView(centralHeader.buffer);
+    centralView.setUint32(0, 0x02014b50, true);
+    centralView.setUint16(4, 20, true);
+    centralView.setUint16(6, 20, true);
+    centralView.setUint16(8, 0, true);
+    centralView.setUint16(10, 0, true);
+    centralView.setUint16(12, 0, true);
+    centralView.setUint16(14, 0, true);
+    centralView.setUint32(16, crc, true);
+    centralView.setUint32(20, size, true);
+    centralView.setUint32(24, size, true);
+    centralView.setUint16(28, nameBytes.length, true);
+    centralView.setUint16(30, 0, true);
+    centralView.setUint16(32, 0, true);
+    centralView.setUint16(34, 0, true);
+    centralView.setUint16(36, 0, true);
+    centralView.setUint32(38, 0, true);
+    centralView.setUint32(42, offset, true);
+    centralHeader.set(nameBytes, 46);
+    centralParts.push(centralHeader);
+
+    offset += localHeader.length + data.length;
+  });
+
+  const centralSize = centralParts.reduce((acc, part) => acc + part.length, 0);
+  const endRecord = new Uint8Array(22);
+  const endView = new DataView(endRecord.buffer);
+  endView.setUint32(0, 0x06054b50, true);
+  endView.setUint16(8, entries.length, true);
+  endView.setUint16(10, entries.length, true);
+  endView.setUint32(12, centralSize, true);
+  endView.setUint32(16, offset, true);
+  endView.setUint16(20, 0, true);
+
+  const totalLength = offset + centralSize + endRecord.length;
+  const output = new Uint8Array(totalLength);
+  let cursor = 0;
+  [...localParts, ...centralParts, endRecord].forEach((part) => {
+    output.set(part, cursor);
+    cursor += part.length;
+  });
+  return output;
+}
+
+type XlsxSheet = { name: string; rows: string[][] };
+
+function sanitizeSheetName(name: string, index: number): string {
+  const replaced = name.replace(/[\\/*?:[\]]/g, " ").trim();
+  const base = replaced.length ? replaced : `Лист ${index + 1}`;
+  return base.slice(0, 31);
+}
+
+function buildSheetXml(rows: string[][]): string {
+  const maxColumns = rows.reduce((acc, row) => Math.max(acc, row.length), 0);
+  const dimension = maxColumns > 0 && rows.length > 0 ? `A1:${excelColumn(maxColumns - 1)}${rows.length}` : "A1";
+  const rowXml = rows
+    .map((row, rowIndex) => {
+      const cells = row
+        .map((cell, colIndex) => `<c r="${excelColumn(colIndex)}${rowIndex + 1}" t="inlineStr"><is><t>${escapeXml(cell)}</t></is></c>`)
+        .join("");
+      return `<row r="${rowIndex + 1}">${cells}</row>`;
+    })
+    .join("");
+  return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+  <dimension ref="${dimension}"/>
+  <sheetData>${rowXml}</sheetData>
+</worksheet>`;
+}
+
+function downloadXlsxWorkbook(sheets: XlsxSheet[], filename: string): void {
+  const normalizedSheets = sheets.map((sheet, index) => ({
+    name: sanitizeSheetName(sheet.name, index),
+    rows: sheet.rows,
+  }));
+  const workbookSheets = normalizedSheets
+    .map((sheet, idx) => `<sheet name="${escapeXml(sheet.name)}" sheetId="${idx + 1}" r:id="rId${idx + 1}"/>`)
+    .join("");
+  const workbookRels = normalizedSheets
+    .map((_, idx) => `<Relationship Id="rId${idx + 1}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet${idx + 1}.xml"/>`)
+    .join("");
+  const contentSheetOverrides = normalizedSheets
+    .map((_, idx) => `<Override PartName="/xl/worksheets/sheet${idx + 1}.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>`)
+    .join("");
+
+  const entries: ZipEntry[] = [
+    {
+      name: "[Content_Types].xml",
+      data: toUint8(`<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+  <Default Extension="xml" ContentType="application/xml"/>
+  <Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>
+  <Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>
+  ${contentSheetOverrides}
+</Types>`),
+    },
+    {
+      name: "_rels/.rels",
+      data: toUint8(`<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/>
+</Relationships>`),
+    },
+    {
+      name: "xl/workbook.xml",
+      data: toUint8(`<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+  <sheets>${workbookSheets}</sheets>
+</workbook>`),
+    },
+    {
+      name: "xl/_rels/workbook.xml.rels",
+      data: toUint8(`<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  ${workbookRels}
+  <Relationship Id="rId${normalizedSheets.length + 1}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>
+</Relationships>`),
+    },
+    {
+      name: "xl/styles.xml",
+      data: toUint8(`<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+  <fonts count="1"><font><sz val="11"/><name val="Calibri"/></font></fonts>
+  <fills count="1"><fill><patternFill patternType="none"/></fill></fills>
+  <borders count="1"><border/></borders>
+  <cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs>
+  <cellXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/></cellXfs>
+</styleSheet>`),
+    },
+    ...normalizedSheets.map((sheet, idx) => ({
+      name: `xl/worksheets/sheet${idx + 1}.xml`,
+      data: toUint8(buildSheetXml(sheet.rows)),
+    })),
+  ];
+
+  const zipBytes = zipStore(entries);
+  const blob = new Blob([zipBytes as unknown as BlobPart], {
+    type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename;
+  link.click();
+  URL.revokeObjectURL(url);
+}
+
 function printHtmlReport(title: string, htmlContent: string): boolean {
   const popup = window.open("", "_blank", "noopener,noreferrer,width=1080,height=900");
   if (!popup) return false;
@@ -1345,16 +1584,6 @@ export default function Home() {
   function show(type: "ok" | "error", text: string): void {
     setMessage({ type, text });
     setTimeout(() => setMessage(null), 2800);
-  }
-
-  async function copyRowsToClipboard(rows: string[][], successMessage: string): Promise<void> {
-    const payload = rows.map((row) => row.join("\t")).join("\n");
-    try {
-      await navigator.clipboard.writeText(payload);
-      show("ok", successMessage);
-    } catch {
-      show("error", "Не удалось скопировать таблицу в буфер обмена.");
-    }
   }
 
   function printFromRef(ref: RefObject<HTMLDivElement | null>, title: string): void {
@@ -3308,26 +3537,15 @@ export default function Home() {
                                 show("error", "Нет данных для экспорта отчёта.");
                                 return;
                               }
-                              void copyRowsToClipboard(selectedReportExportRows, "Индивидуальный отчёт скопирован (TSV).");
+                              downloadXlsxWorkbook(
+                                [{ name: "Отчёт по ребёнку", rows: selectedReportExportRows }],
+                                `otchet-rebenok-${child?.registryId ?? "ANON-001"}-${selectedReportSession.campaignId}.xlsx`,
+                              );
+                              show("ok", "Индивидуальный отчёт сохранён как XLSX.");
                             }}
                             type="button"
                           >
-                            Копировать отчёт (TSV)
-                          </button>
-                          <button
-                            className={buttonSecondaryClass}
-                            onClick={() => {
-                              if (!selectedReportExportRows.length) {
-                                show("error", "Нет данных для экспорта отчёта.");
-                                return;
-                              }
-                              const content = selectedReportExportRows.map((row) => row.join("\t")).join("\n");
-                              downloadText(content, `otchet-${child?.registryId ?? "uchenik"}-${selectedReportSession.campaignId}.tsv`, "text/tab-separated-values;charset=utf-8");
-                              show("ok", "Индивидуальный отчёт сохранён как TSV.");
-                            }}
-                            type="button"
-                          >
-                            Скачать отчёт (TSV)
+                            Скачать отчёт по ребёнку (XLSX)
                           </button>
                           <button
                             className={buttonSecondaryClass}
@@ -3417,7 +3635,7 @@ export default function Home() {
                         <div className="rounded-md border border-slate-700 bg-slate-950/70 p-3 text-xs text-slate-300">
                           <p className="font-semibold text-slate-100">Структурированная секция для PDF/Excel</p>
                           <p className="mt-1">
-                            Карточка ученика, доменная таблица, методологическая пометка и графики выше собраны в печатный макет и поддерживают копирование/скачивание TSV для последующей выгрузки.
+                            Карточка ученика, доменная таблица, методологическая пометка и графики выше собраны в печатный макет и поддерживают выгрузку в XLSX для последующей передачи специалисту.
                           </p>
                         </div>
 
@@ -3700,11 +3918,12 @@ export default function Home() {
                       show("error", "Нет данных для экспорта рабочей сводки класса.");
                       return;
                     }
-                    void copyRowsToClipboard(selectedClassSummaryExportRows, `Рабочая сводка ${selectedAnalyticsClass} скопирована (TSV).`);
+                    downloadCsv(selectedClassSummaryExportRows, `svodka-klassa-${selectedAnalyticsClass}.csv`);
+                    show("ok", `Сводка класса ${selectedAnalyticsClass} сохранена как CSV.`);
                   }}
                   type="button"
                 >
-                  Копировать сводку класса (TSV)
+                  Скачать сводку класса (CSV)
                 </button>
                 <button
                   className={buttonSecondaryClass}
@@ -3713,13 +3932,15 @@ export default function Home() {
                       show("error", "Нет данных для экспорта рабочей сводки класса.");
                       return;
                     }
-                    const content = selectedClassSummaryExportRows.map((row) => row.join("\t")).join("\n");
-                    downloadText(content, `rabochaya-svodka-${selectedAnalyticsClass}.tsv`, "text/tab-separated-values;charset=utf-8");
-                    show("ok", `Рабочая сводка ${selectedAnalyticsClass} сохранена как TSV.`);
+                    downloadXlsxWorkbook(
+                      [{ name: `Класс ${selectedAnalyticsClass}`, rows: selectedClassSummaryExportRows }],
+                      `eksport-po-klassu-${selectedAnalyticsClass}.xlsx`,
+                    );
+                    show("ok", `Экспорт по классу ${selectedAnalyticsClass} сохранён как XLSX.`);
                   }}
                   type="button"
                 >
-                  Скачать сводку класса (TSV)
+                  Скачать экспорт по классу (XLSX)
                 </button>
                 <button
                   className={buttonSecondaryClass}
@@ -3792,7 +4013,7 @@ export default function Home() {
               <div className="rounded-md border border-slate-700 bg-slate-950/70 p-3 text-xs text-slate-300">
                 <p className="font-semibold text-slate-100">Структурированная секция для PDF/Excel</p>
                 <p className="mt-1">
-                  Блоки «Рабочая сводка класса», «Графики сводки», а также TSV-кнопки выше предназначены для прямого копирования в документы специалиста и последующего экспорта.
+                          Блоки «Рабочая сводка класса» и «Графики сводки» предназначены для прямой выгрузки в CSV/XLSX и последующей работы в Excel или Google Sheets.
                 </p>
               </div>
               <div className="mt-4 rounded-md border border-slate-700 bg-slate-950/70 p-3">
@@ -4052,22 +4273,25 @@ export default function Home() {
                 <button
                   className={buttonSecondaryClass}
                   onClick={() => {
-                    void copyRowsToClipboard(classDecisionExportRows, `Таблица итоговых решений для ${selectedDecisionClass} скопирована (TSV).`);
+                    downloadCsv(classDecisionExportRows, `resheniya-${selectedDecisionClass}.csv`);
+                    show("ok", `Таблица итоговых решений ${selectedDecisionClass} сохранена как CSV.`);
                   }}
                   type="button"
                 >
-                  Копировать таблицу решений (TSV)
+                  Скачать таблицу решений (CSV)
                 </button>
                 <button
                   className={buttonSecondaryClass}
                   onClick={() => {
-                    const content = classDecisionExportRows.map((row) => row.join("\t")).join("\n");
-                    downloadText(content, `itogovye-resheniya-${selectedDecisionClass}.tsv`, "text/tab-separated-values;charset=utf-8");
-                    show("ok", `Таблица итоговых решений ${selectedDecisionClass} сохранена как TSV.`);
+                    downloadXlsxWorkbook(
+                      [{ name: `Решения ${selectedDecisionClass}`, rows: classDecisionExportRows }],
+                      `itogovaya-tablitsa-klassa-${selectedDecisionClass}.xlsx`,
+                    );
+                    show("ok", `Итоговый экспорт ${selectedDecisionClass} сохранён как XLSX.`);
                   }}
                   type="button"
                 >
-                  Скачать таблицу решений (TSV)
+                  Скачать итоговую таблицу (XLSX)
                 </button>
               </div>
 
@@ -4210,23 +4434,12 @@ export default function Home() {
                 <button
                   className={buttonSecondaryClass}
                   onClick={() => {
-                    void copyRowsToClipboard(completedResultsExportRows, "Таблица завершённых результатов скопирована (TSV).");
+                    downloadCsv(completedResultsExportRows, "zavershennye-rezultaty-detei.csv");
+                    show("ok", "Таблица завершённых результатов сохранена как CSV.");
                   }}
                   type="button"
                 >
-                  Копировать таблицу (TSV)
-                </button>
-                <button
-                  className={buttonSecondaryClass}
-                  onClick={() => {
-                    void copyRowsToClipboard(
-                      completedResultsExportRows.map((row) => [row.join("; ")]),
-                      "Таблица скопирована в одноколоночном виде.",
-                    );
-                  }}
-                  type="button"
-                >
-                  Копировать в текстовом виде
+                  Скачать таблицу завершённых результатов (CSV)
                 </button>
               </div>
               <div className="overflow-x-auto rounded-md border border-slate-700">
@@ -4278,11 +4491,12 @@ export default function Home() {
                 <button
                   className={buttonSecondaryClass}
                   onClick={() => {
-                    void copyRowsToClipboard(classSummaryExportRows, "Таблица сводки классов скопирована (TSV).");
+                    downloadCsv(classSummaryExportRows, "svodka-vseh-klassov.csv");
+                    show("ok", "Сводка классов сохранена как CSV.");
                   }}
                   type="button"
                 >
-                  Копировать таблицу (TSV)
+                  Скачать сводку классов (CSV)
                 </button>
               </div>
               <div className="overflow-x-auto rounded-md border border-slate-700">
