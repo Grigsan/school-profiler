@@ -60,39 +60,57 @@ export async function findChildByCode(code: string) {
 }
 
 export async function startOrResumeSession(childId: string, grade: 4 | 6, campaignId: string, create: { id: string; recommendation: string; startedAt: string; scores: unknown[] }) {
-  const completed = await prisma.session.findFirst({
-    where: { childId, campaignId, grade: fromGrade(grade), status: "completed" },
-  });
-  if (completed) return { type: "completed" as const };
-
-  const resumable = await prisma.session.findFirst({
-    where: { childId, campaignId, grade: fromGrade(grade), status: { in: ["active", "paused"] } },
-    orderBy: { startedAt: "desc" },
-  });
-
-  if (resumable) {
-    const updated = await prisma.session.update({
-      where: { id: resumable.id },
-      data: { status: "active", pausedAt: null },
+  const dbGrade = fromGrade(grade);
+  return prisma.$transaction(async (tx: typeof prisma) => {
+    const completed = await tx.session.findFirst({
+      where: { childId, campaignId, grade: dbGrade, status: "completed" },
     });
-    return { type: "resumed" as const, sessionId: updated.id };
-  }
+    if (completed) return { type: "completed" as const };
 
-  const created = await prisma.session.create({
-    data: {
-      id: create.id,
-      childId,
-      campaignId,
-      grade: fromGrade(grade),
-      status: "active",
-      startedAt: new Date(create.startedAt),
-      currentQuestionIndex: 0,
-      recommendation: create.recommendation,
-      scores: create.scores,
-      pauseEvents: [],
-    },
+    const resumable = await tx.session.findFirst({
+      where: { childId, campaignId, grade: dbGrade, status: { in: ["active", "paused"] } },
+      orderBy: { startedAt: "desc" },
+    });
+
+    if (resumable) {
+      const updated = await tx.session.update({
+        where: { id: resumable.id },
+        data: { status: "active", pausedAt: null },
+      });
+      return { type: "resumed" as const, sessionId: updated.id };
+    }
+
+    try {
+      const created = await tx.session.create({
+        data: {
+          id: create.id,
+          childId,
+          campaignId,
+          grade: dbGrade,
+          status: "active",
+          startedAt: new Date(create.startedAt),
+          currentQuestionIndex: 0,
+          recommendation: create.recommendation,
+          scores: create.scores,
+          pauseEvents: [],
+        },
+      });
+      return { type: "created" as const, sessionId: created.id };
+    } catch {
+      const concurrent = await tx.session.findFirst({
+        where: { childId, campaignId, grade: dbGrade, status: { in: ["active", "paused"] } },
+        orderBy: { startedAt: "desc" },
+      });
+      if (concurrent) {
+        const updated = await tx.session.update({
+          where: { id: concurrent.id },
+          data: { status: "active", pausedAt: null },
+        });
+        return { type: "resumed" as const, sessionId: updated.id };
+      }
+      throw new Error("Failed to start session atomically.");
+    }
   });
-  return { type: "created" as const, sessionId: created.id };
 }
 
 export { fromGrade };

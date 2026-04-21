@@ -2356,36 +2356,53 @@ export default function Home() {
         session.grade === child.grade,
     );
 
+    const startPayloadBase = {
+      childId: child.id,
+      grade: child.grade,
+      campaignId,
+    };
+
     if (existingActiveOrPaused) {
-      await fetch("/api/student/start", {
+      const response = await fetch("/api/student/start", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          childId: child.id,
-          grade: child.grade,
-          campaignId,
+          ...startPayloadBase,
           sessionId: existingActiveOrPaused.id,
           recommendation: existingActiveOrPaused.recommendation,
           startedAt: existingActiveOrPaused.startedAt,
           scores: existingActiveOrPaused.scores,
         }),
       });
-      setStore((prev) => ({
-        ...prev,
-        sessions: prev.sessions.map((session) =>
-          session.id === existingActiveOrPaused.id
-            ? {
-                ...session,
-                status: "active",
-                pausedAt: undefined,
-                pauseEvents: (session.pauseEvents ?? []).map((event) =>
-                  event.resumedAt ? event : { ...event, resumedAt: new Date().toISOString() },
-                ),
-              }
-            : session,
-        ),
-      }));
-      show("ok", "Возобновлена существующая сессия.");
+      const payload = (await response.json()) as { type: "created" | "resumed" | "completed"; sessionId?: string };
+      if (payload.type === "completed") {
+        show("error", "Тестирование для вашего класса уже завершено. Повторный проход недоступен.");
+        return;
+      }
+      if (!payload.sessionId) {
+        show("error", "Не удалось получить идентификатор сессии от сервера.");
+        return;
+      }
+      setStore((prev) => {
+        const canonical = prev.sessions.find((session) => session.id === payload.sessionId);
+        if (!canonical) return prev;
+        return {
+          ...prev,
+          sessions: prev.sessions.map((session) =>
+            session.id === payload.sessionId
+              ? {
+                  ...session,
+                  status: "active",
+                  pausedAt: undefined,
+                  pauseEvents: (session.pauseEvents ?? []).map((event) =>
+                    event.resumedAt ? event : { ...event, resumedAt: new Date().toISOString() },
+                  ),
+                }
+              : session,
+          ),
+        };
+      });
+      show("ok", payload.type === "resumed" ? "Возобновлена существующая сессия." : "Сессия активирована.");
       return;
     }
 
@@ -2404,21 +2421,51 @@ export default function Home() {
       recommendation: computeRecommendation(child.grade, zeroScores),
     };
 
-    await fetch("/api/student/start", {
+    const response = await fetch("/api/student/start", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        childId: child.id,
-        grade: child.grade,
-        campaignId,
+        ...startPayloadBase,
         sessionId: newSession.id,
         recommendation: newSession.recommendation,
         startedAt: newSession.startedAt,
         scores: newSession.scores,
       }),
     });
-    setStore((prev) => ({ ...prev, sessions: [newSession, ...prev.sessions] }));
-    show("ok", "Новая сессия запущена.");
+    const payload = (await response.json()) as { type: "created" | "resumed" | "completed"; sessionId?: string };
+    if (payload.type === "completed") {
+      show("error", "Тестирование для вашего класса уже завершено. Повторный проход недоступен.");
+      return;
+    }
+    if (payload.type === "created" && payload.sessionId === newSession.id) {
+      setStore((prev) => ({ ...prev, sessions: [newSession, ...prev.sessions] }));
+      show("ok", "Новая сессия запущена.");
+      return;
+    }
+    if (!payload.sessionId) {
+      show("error", "Не удалось получить идентификатор сессии от сервера.");
+      return;
+    }
+    setStore((prev) => {
+      const canonical = prev.sessions.find((session) => session.id === payload.sessionId);
+      if (!canonical) return prev;
+      return {
+        ...prev,
+        sessions: prev.sessions.map((session) =>
+          session.id === payload.sessionId
+            ? {
+                ...session,
+                status: "active",
+                pausedAt: undefined,
+                pauseEvents: (session.pauseEvents ?? []).map((event) =>
+                  event.resumedAt ? event : { ...event, resumedAt: new Date().toISOString() },
+                ),
+              }
+            : session,
+        ),
+      };
+    });
+    show("ok", "Возобновлена существующая сессия.");
   }
 
   async function answerQuestion(sessionId: string, selectedIndex: number): Promise<void> {

@@ -9,10 +9,10 @@ export async function POST(request: Request, { params }: { params: Promise<{ ses
   const { sessionId } = await params;
   const body = (await request.json()) as { startedAt: string; scores: unknown[]; recommendation: string };
 
-  await prisma.$transaction([
-    prisma.answer.deleteMany({ where: { sessionId } }),
-    prisma.specialistReview.deleteMany({ where: { sessionId } }),
-    prisma.session.update({
+  await prisma.$transaction(async (tx: typeof prisma) => {
+    await tx.answer.deleteMany({ where: { sessionId } });
+    await tx.specialistReview.deleteMany({ where: { sessionId } });
+    await tx.session.update({
       where: { id: sessionId },
       data: {
         status: "paused",
@@ -26,7 +26,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ ses
         recommendation: body.recommendation,
         adminState: "reset",
       },
-    }),
-  ]);
+    });
+  });
   return NextResponse.json({ ok: true });
 }
