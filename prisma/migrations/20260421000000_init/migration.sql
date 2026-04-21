@@ -81,5 +81,8 @@ CREATE INDEX "Child_classGroup_idx" ON "Child"("classGroup");
 CREATE INDEX "Child_registryId_idx" ON "Child"("registryId");
 CREATE INDEX "AccessCode_classGroup_idx" ON "AccessCode"("classGroup");
 CREATE INDEX "Session_childId_campaignId_idx" ON "Session"("childId", "campaignId");
+CREATE UNIQUE INDEX "Session_open_unique_idx"
+ON "Session"("childId", "campaignId", "grade")
+WHERE "status" IN ('active', 'paused');
 CREATE INDEX "Session_status_idx" ON "Session"("status");
 CREATE INDEX "Answer_sessionId_idx" ON "Answer"("sessionId");

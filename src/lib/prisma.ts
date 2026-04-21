@@ -115,6 +115,9 @@ CREATE TABLE IF NOT EXISTS systemMeta (
   lastBackupAt TEXT,
   updatedAt TEXT NOT NULL
 );
+CREATE UNIQUE INDEX IF NOT EXISTS session_open_unique_idx
+  ON session (childId, campaignId, grade)
+  WHERE status IN ('active', 'paused');
 `);
 
 function nowIso() {
@@ -437,13 +440,16 @@ const prismaClient = {
     },
   },
   async $transaction(arg: unknown) {
+    if (Array.isArray(arg)) {
+      throw new Error("Unsafe $transaction(array) is not supported. Use callback form: prisma.$transaction(async (tx) => { ... }).");
+    }
+    if (typeof arg !== "function") {
+      throw new Error("Invalid $transaction argument. Expected callback form.");
+    }
+
     db.exec("BEGIN");
     try {
-      const result = Array.isArray(arg)
-        ? await Promise.all(arg as Promise<unknown>[])
-        : typeof arg === "function"
-          ? await (arg as (tx: typeof prismaClient) => Promise<unknown>)(prismaClient)
-          : null;
+      const result = await (arg as (tx: typeof prismaClient) => Promise<unknown>)(prismaClient);
       db.exec("COMMIT");
       return result;
     } catch (error) {

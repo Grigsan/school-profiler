@@ -20,8 +20,8 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
   const session = await prisma.session.findUnique({ where: { id } });
   if (!session) return NextResponse.json({ error: "NOT_FOUND" }, { status: 404 });
 
-  await prisma.$transaction([
-    prisma.answer.upsert({
+  await prisma.$transaction(async (tx: typeof prisma) => {
+    await tx.answer.upsert({
       where: { sessionId_questionId: { sessionId: id, questionId: body.questionId } },
       update: {
         choiceIndex: body.choiceIndex,
@@ -37,8 +37,8 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
         isCorrect: body.isCorrect,
         answeredAt: new Date(body.answeredAt),
       },
-    }),
-    prisma.session.update({
+    });
+    await tx.session.update({
       where: { id },
       data: {
         status: "active",
@@ -48,8 +48,8 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
         recommendation: body.recommendation,
         pauseEvents: body.pauseEvents,
       },
-    }),
-  ]);
+    });
+  });
 
   return NextResponse.json({ ok: true });
 }
