@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, RefObject, useEffect, useMemo, useRef, useState } from "react";
+import { FormEvent, RefObject, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Bar,
   BarChart,
@@ -1319,6 +1319,16 @@ export default function Home() {
     window.localStorage.setItem(LAST_BACKUP_AT_STORAGE_KEY, lastBackupAt);
   }, [lastBackupAt]);
 
+  useEffect(() => {
+    if (!registryImportSource) {
+      setRegistryImportPreview(null);
+      return;
+    }
+    setRegistryImportPreview(
+      parseRegistryCsvContent(registryImportSource.fileName, registryImportSource.content, registryImportMode, selectedRegistryClass),
+    );
+  }, [parseRegistryCsvContent, registryImportSource, registryImportMode, selectedRegistryClass, store.accessCodes, store.children]);
+
   const childrenById = useMemo(() => new Map(store.children.map((child) => [child.id, child])), [store.children]);
   const accessCodesByCode = useMemo(
     () => new Map(store.accessCodes.map((record) => [normalizeAccessCode(record.code), record])),
@@ -1486,7 +1496,12 @@ export default function Home() {
     show("ok", "Режим администратора открыт.");
   }
 
-  function parseRegistryCsvContent(fileName: string, content: string, mode: RegistryImportMode, targetClass: ClassGroup): RegistryImportPreview {
+  const parseRegistryCsvContent = useCallback((
+    fileName: string,
+    content: string,
+    mode: RegistryImportMode,
+    targetClass: ClassGroup,
+  ): RegistryImportPreview => {
     const lines = content.replaceAll("\r\n", "\n").replaceAll("\r", "\n").split("\n").filter((line) => line.trim().length > 0);
     if (!lines.length) {
       return {
@@ -1604,7 +1619,7 @@ export default function Home() {
         duplicateRows: duplicates.length,
       },
     };
-  }
+  }, [store.accessCodes, store.children]);
 
   function handleRegistryFileImport(file: File): void {
     const lowerFileName = file.name.toLowerCase();
@@ -1613,14 +1628,10 @@ export default function Home() {
       return;
     }
     setIsImportingRegistry(true);
-    const importModeAtUpload = registryImportMode;
-    const targetClassAtUpload = selectedRegistryClass;
     const reader = new FileReader();
     reader.onload = () => {
       const content = typeof reader.result === "string" ? reader.result : "";
-      const preview = parseRegistryCsvContent(file.name, content, importModeAtUpload, targetClassAtUpload);
       setRegistryImportSource({ fileName: file.name, content });
-      setRegistryImportPreview(preview);
       setIsImportingRegistry(false);
       show("ok", `Файл ${file.name} загружен в предпросмотр.`);
     };
@@ -1634,16 +1645,10 @@ export default function Home() {
 
   function handleRegistryImportModeChange(nextMode: RegistryImportMode): void {
     setRegistryImportMode(nextMode);
-    if (!registryImportSource) return;
-    setRegistryImportPreview(
-      parseRegistryCsvContent(registryImportSource.fileName, registryImportSource.content, nextMode, selectedRegistryClass),
-    );
   }
 
   function handleSelectedRegistryClassChange(nextClass: ClassGroup): void {
     setSelectedRegistryClass(nextClass);
-    if (!registryImportSource) return;
-    setRegistryImportPreview(parseRegistryCsvContent(registryImportSource.fileName, registryImportSource.content, registryImportMode, nextClass));
   }
 
   function confirmRegistryImport(): void {
