@@ -2217,22 +2217,26 @@ export default function Home() {
       }
     });
     if (!importedChildren.length) criticalSteps.push("Реестр класса не загружен.");
-    if (activeCodesCount === 0) criticalSteps.push("Нет активных кодов доступа.");
     if (completedImportedSessions.length === 0) criticalSteps.push("Нет завершённых попыток тестирования.");
     if (notStartedCount > 0) criticalSteps.push("Есть ученики, которые ещё не начинали тестирование.");
     if (pausedImportedSessions.length > 0) criticalSteps.push("Остались незавершённые попытки.");
     if (pendingReviewCount > 0) criticalSteps.push("Не все решения приняты.");
+    if (activeCodesCount === 0 && importedChildren.length > 0) {
+      statusMessages.push("Активных кодов доступа не осталось — это допустимо для завершённого цикла.");
+    }
     if (pendingReviewCount > 0) statusMessages.push("Есть результаты без финального решения.");
     if (completedImportedSessions.length > 0 && !hasBackup) statusMessages.push("Рекомендуется сохранить резервную копию.");
 
-    const cycleStatusLines: string[] = [];
-    if (completedImportedSessions.length === 0) cycleStatusLines.push("Тестирование ещё не завершалось");
-    if (notStartedCount > 0) cycleStatusLines.push("Есть ученики, которые ещё не начинали тестирование");
-    if (pausedImportedSessions.length > 0) cycleStatusLines.push("Остались незавершённые попытки");
-    if (pendingReviewCount > 0) cycleStatusLines.push("Не все решения приняты");
+    const cycleCompletionIssues: string[] = [];
+    if (!importedChildren.length) cycleCompletionIssues.push("Реестр класса не загружен");
+    if (completedImportedSessions.length === 0) cycleCompletionIssues.push("Тестирование ещё не завершалось");
+    if (notStartedCount > 0) cycleCompletionIssues.push("Есть ученики, которые ещё не начинали тестирование");
+    if (pausedImportedSessions.length > 0) cycleCompletionIssues.push("Остались незавершённые попытки");
+    if (pendingReviewCount > 0) cycleCompletionIssues.push("Не все решения приняты");
+
+    const cycleStatusLines: string[] = [...cycleCompletionIssues];
     if (completedImportedSessions.length > 0 && !hasBackup) cycleStatusLines.push("Рекомендуется сохранить резервную копию");
-    if (!importedChildren.length || activeCodesCount === 0) cycleStatusLines.push("Рабочий цикл не завершён");
-    const cycleCompleted = cycleStatusLines.length === 0;
+    const cycleCompleted = cycleCompletionIssues.length === 0;
     if (cycleCompleted) {
       cycleStatusLines.push("Текущий цикл можно считать завершённым.");
       statusMessages.push("Текущий цикл можно считать завершённым.");
