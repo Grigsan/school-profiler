@@ -1,0 +1,8 @@
+CREATE TABLE "AppState" (
+  "id" INTEGER NOT NULL DEFAULT 1,
+  "revision" INTEGER NOT NULL DEFAULT 0,
+  "updatedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  "lastBackupAt" TIMESTAMP(3),
+  "payload" JSONB NOT NULL,
+  CONSTRAINT "AppState_pkey" PRIMARY KEY ("id")
+);

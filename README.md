@@ -1,36 +1,104 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# School Profiler (production-like server mode)
 
-## Getting Started
+Приложение переведено с browser-localStorage на **центральное серверное хранение** (`data/state.json`), чтобы дети могли продолжать работу с разных устройств и видеть общий актуальный статус.
 
-First, run the development server:
+## Что изменилось
+
+- Админ PIN теперь берётся из `ADMIN_PIN` (по умолчанию `69760626`).
+- Источник истины — серверное состояние (`/api/state`), а не localStorage браузера.
+- Добавлен контроль ревизий (optimistic concurrency), чтобы снизить риск потери данных при параллельной работе.
+- Добавлены команды безопасного сброса и резервного копирования серверного состояния.
+- Подготовлены Docker / docker-compose и пример Nginx-конфига для HTTPS reverse proxy.
+- Добавлен каркас Prisma-схемы и миграции для PostgreSQL-переезда (`prisma/`).
+
+## Быстрый старт (Ubuntu / Linux)
 
 ```bash
+cp .env.example .env
+npm ci
+npm run state:reset
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Открыть: `http://localhost:3000`
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+## Production (без Docker)
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+```bash
+cp .env.example .env
+npm ci
+npm run build
+npm run state:reset
+npm run start
+```
 
-## Learn More
+## Production (Docker Compose)
 
-To learn more about Next.js, take a look at the following resources:
+```bash
+cp .env.example .env
+docker compose build
+docker compose up -d
+```
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+## Основные команды
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+```bash
+# Линт
+npm run lint
 
-## Deploy on Vercel
+# Production build
+npm run build
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+# Чистый старт (сброс всех данных, кроме фиксированных классов 4А/4Б/6А/6Б)
+npm run state:reset
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+# Локальный backup серверного состояния
+npm run state:backup
+```
+
+## Импорт/рабочий цикл после деплоя
+
+1. Выполнить `npm run state:reset` (чистая база).
+2. Войти администратором (PIN из `ADMIN_PIN`).
+3. Импортировать реестр учащихся с `access_code`.
+4. Ученики заходят по своим кодам с любых устройств.
+5. Данные сессий и прогресса сразу сохраняются в общее серверное состояние.
+
+## Reset/backup для эксплуатации
+
+- Сброс: `npm run state:reset`
+- Backup: `npm run state:backup`
+- API reset (только при активной admin cookie): `DELETE /api/state`
+
+## PostgreSQL / Prisma подготовка
+
+В репозитории добавлены:
+
+- `prisma/schema.prisma`
+- `prisma/migrations/20260421000000_init/migration.sql`
+
+Команды для дальнейшего полного перехода на PostgreSQL:
+
+```bash
+npx prisma generate
+npx prisma migrate deploy
+```
+
+## Reverse proxy (HTTPS)
+
+Пример Nginx: `deploy/nginx.conf`.
+
+Рекомендуется:
+
+1. Выпустить сертификат Let's Encrypt (`certbot`).
+2. Включить `proxy_set_header X-Forwarded-Proto $scheme`.
+3. Пробрасывать только HTTPS наружу.
+
+## Переменные окружения
+
+См. `.env.example`.
+
+Критичные:
+
+- `ADMIN_PIN=69760626`
+- `SESSION_SECRET=<случайная длинная строка>`

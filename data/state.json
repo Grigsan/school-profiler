@@ -1,0 +1,36 @@
+{
+  "revision": 1,
+  "updatedAt": "2026-04-21T05:00:29.794Z",
+  "lastBackupAt": null,
+  "store": {
+    "children": [],
+    "accessCodes": [],
+    "campaigns": [
+      {
+        "id": "4А",
+        "title": "4А",
+        "grade": 4,
+        "createdAt": "2026-01-01T00:00:00.000Z"
+      },
+      {
+        "id": "4Б",
+        "title": "4Б",
+        "grade": 4,
+        "createdAt": "2026-01-01T00:00:00.000Z"
+      },
+      {
+        "id": "6А",
+        "title": "6А",
+        "grade": 6,
+        "createdAt": "2026-01-01T00:00:00.000Z"
+      },
+      {
+        "id": "6Б",
+        "title": "6Б",
+        "grade": 6,
+        "createdAt": "2026-01-01T00:00:00.000Z"
+      }
+    ],
+    "sessions": []
+  }
+}

@@ -281,12 +281,9 @@ type BatteryDefinition = {
   max: number;
 };
 
-const STORAGE_KEY = "school-profiler-store-v1";
-const LAST_BACKUP_AT_STORAGE_KEY = "school-profiler-last-backup-at";
+const STORAGE_KEY = "school-profiler-store-server-v1";
 const BACKUP_SCHEMA = "school-profiler-backup";
 const BACKUP_FORMAT_VERSION: BackupFormatVersion = "1.1.0";
-const ADMIN_PIN = "4321";
-const DEMO_ADMIN_HELPER_ENABLED = process.env.NODE_ENV !== "production";
 const CLASS_GROUPS: ClassGroup[] = ["4А", "4Б", "6А", "6Б"];
 const SPECIALIST_FINAL_DECISIONS: SpecialistFinalDecision[] = [
   "математический профиль",
@@ -1670,23 +1667,14 @@ function isSessionComplete(session: Session): boolean {
 }
 
 export default function Home() {
-  const [store, setStore] = useState<Store>(() => {
-    if (typeof window === "undefined") return EMPTY_STORE;
-    const raw = window.localStorage.getItem(STORAGE_KEY);
-    if (!raw) return EMPTY_STORE;
-
-    try {
-      return normalizeStore(JSON.parse(raw) as Store);
-    } catch {
-      return EMPTY_STORE;
-    }
-  });
+  const [store, setStore] = useState<Store>(EMPTY_STORE);
+  const [storeRevision, setStoreRevision] = useState(0);
+  const [storeHydrated, setStoreHydrated] = useState(false);
 
   const [role, setRole] = useState<"admin" | "child">("child");
   const [message, setMessage] = useState<{ type: "ok" | "error"; text: string } | null>(null);
   const [adminPinInput, setAdminPinInput] = useState("");
   const [adminUnlocked, setAdminUnlocked] = useState(false);
-  const [demoPinVisible, setDemoPinVisible] = useState(false);
   const [selectedRegistryClass, setSelectedRegistryClass] = useState<ClassGroup>("4А");
   const [registryImportMode, setRegistryImportMode] = useState<RegistryImportMode>("replace_class");
   const [registryImportPreview, setRegistryImportPreview] = useState<RegistryImportPreview | null>(null);
@@ -1694,33 +1682,77 @@ export default function Home() {
   const [isImportingRegistry, setIsImportingRegistry] = useState(false);
   const [backupImportPreview, setBackupImportPreview] = useState<BackupImportPreview | null>(null);
   const [isImportingBackup, setIsImportingBackup] = useState(false);
-  const [lastBackupAt, setLastBackupAt] = useState<string | null>(() => {
-    if (typeof window === "undefined") return null;
-    return window.localStorage.getItem(LAST_BACKUP_AT_STORAGE_KEY);
-  });
+  const [lastBackupAt, setLastBackupAt] = useState<string | null>(null);
   const [loginCode, setLoginCode] = useState("");
   const [loggedChildId, setLoggedChildId] = useState<string | null>(null);
   const [pendingAnswerBySession, setPendingAnswerBySession] = useState<Record<string, string>>({});
   const pendingAnswerBySessionRef = useRef<Record<string, string>>({});
 
-  useEffect(() => {
-    try {
-      window.localStorage.setItem(STORAGE_KEY, JSON.stringify({ ...store, campaigns: FIXED_CAMPAIGNS }));
-    } catch (error) {
-      if (process.env.NODE_ENV !== "production") {
-        console.warn("[dev] failed to persist store to localStorage", error);
-      }
-    }
-  }, [store]);
+  const show = useCallback((type: "ok" | "error", text: string): void => {
+    setMessage({ type, text });
+    setTimeout(() => setMessage(null), 2800);
+  }, []);
 
   useEffect(() => {
-    if (typeof window === "undefined") return;
-    if (!lastBackupAt) {
-      window.localStorage.removeItem(LAST_BACKUP_AT_STORAGE_KEY);
-      return;
+    let cancelled = false;
+
+    async function hydrateStore(): Promise<void> {
+      try {
+        const response = await fetch("/api/state", { cache: "no-store" });
+        if (!response.ok) throw new Error("hydrate failed");
+        const payload = (await response.json()) as { store: Store; revision: number; lastBackupAt: string | null };
+        if (cancelled) return;
+        setStore(normalizeStore(payload.store));
+        setStoreRevision(payload.revision ?? 0);
+        setLastBackupAt(payload.lastBackupAt ?? null);
+        setStoreHydrated(true);
+      } catch {
+        if (!cancelled) {
+          setStoreHydrated(true);
+          show("error", "Не удалось загрузить состояние с сервера.");
+        }
+      }
     }
-    window.localStorage.setItem(LAST_BACKUP_AT_STORAGE_KEY, lastBackupAt);
-  }, [lastBackupAt]);
+
+    hydrateStore();
+    return () => {
+      cancelled = true;
+    };
+  }, [show]);
+
+  useEffect(() => {
+    if (!storeHydrated) return;
+
+    const timeout = window.setTimeout(async () => {
+      try {
+        const response = await fetch("/api/state", {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            revision: storeRevision,
+            store: { ...store, campaigns: FIXED_CAMPAIGNS },
+            lastBackupAt,
+          }),
+        });
+
+        const payload = await response.json();
+        if (response.status === 409) {
+          setStore(normalizeStore(payload.store));
+          setStoreRevision(payload.revision ?? 0);
+          setLastBackupAt(payload.lastBackupAt ?? null);
+          show("error", "Данные на сервере изменились с другого устройства. Последняя версия загружена автоматически.");
+          return;
+        }
+
+        if (!response.ok) throw new Error("save failed");
+        setStoreRevision(payload.revision ?? storeRevision);
+      } catch {
+        show("error", "Не удалось сохранить изменения на сервере.");
+      }
+    }, 250);
+
+    return () => window.clearTimeout(timeout);
+  }, [lastBackupAt, show, store, storeHydrated, storeRevision]);
 
   const childrenById = useMemo(() => new Map(store.children.map((child) => [child.id, child])), [store.children]);
   const accessCodesByCode = useMemo(
@@ -1746,11 +1778,6 @@ export default function Home() {
   const individualChartsRef = useRef<HTMLDivElement | null>(null);
   const classSummaryRef = useRef<HTMLDivElement | null>(null);
   const classChartsRef = useRef<HTMLDivElement | null>(null);
-
-  function show(type: "ok" | "error", text: string): void {
-    setMessage({ type, text });
-    setTimeout(() => setMessage(null), 2800);
-  }
 
   async function printFromRef(
     ref: RefObject<HTMLDivElement | null>,
@@ -1842,18 +1869,7 @@ export default function Home() {
       return;
     }
 
-    let classSummariesFromStorage: ClassSummaryRow[] | undefined;
-    try {
-      const raw = window.localStorage.getItem(STORAGE_KEY);
-      if (raw) {
-        const parsed = JSON.parse(raw) as { classSummaries?: unknown };
-        if (Array.isArray(parsed.classSummaries)) {
-          classSummariesFromStorage = parsed.classSummaries as ClassSummaryRow[];
-        }
-      }
-    } catch {
-      // Игнорируем необязательный блок classSummaries, если он отсутствует или повреждён.
-    }
+    const classSummariesFromStorage = Array.isArray(store.classSummaries) ? (store.classSummaries as ClassSummaryRow[]) : undefined;
 
     const backup: AppBackup = {
       schema: BACKUP_SCHEMA,
@@ -1939,15 +1955,25 @@ export default function Home() {
     show("ok", "Данные успешно восстановлены из резервной копии.");
   }
 
-  function unlockAdmin(e: FormEvent): void {
+  async function unlockAdmin(e: FormEvent): Promise<void> {
     e.preventDefault();
-    if (adminPinInput.trim() !== ADMIN_PIN) {
-      show("error", "Неверный PIN администратора.");
-      return;
+    try {
+      const response = await fetch("/api/admin/login", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ pin: adminPinInput.trim() }),
+      });
+      if (!response.ok) {
+        show("error", "Неверный PIN администратора.");
+        return;
+      }
+
+      setAdminUnlocked(true);
+      setAdminPinInput("");
+      show("ok", "Режим администратора открыт.");
+    } catch {
+      show("error", "Ошибка сети при входе администратора.");
     }
-    setAdminUnlocked(true);
-    setAdminPinInput("");
-    show("ok", "Режим администратора открыт.");
   }
 
   const parseRegistryCsvContent = useCallback((
@@ -3382,19 +3408,6 @@ export default function Home() {
                   Открыть админ-режим
                 </button>
               </form>
-              {DEMO_ADMIN_HELPER_ENABLED && (
-                <div className="mt-3 rounded-md border border-amber-500/50 bg-amber-950/30 p-3 text-sm text-amber-100">
-                  <p className="mb-2 text-xs uppercase tracking-wide text-amber-300">Только для MVP/демо</p>
-                  <button
-                    className={buttonSecondaryClass}
-                    onClick={() => setDemoPinVisible((prev) => !prev)}
-                    type="button"
-                  >
-                    {demoPinVisible ? "Скрыть тестовый PIN" : "Показать тестовый PIN"}
-                  </button>
-                  {demoPinVisible && <p className="mt-2 font-mono text-base text-amber-200">{ADMIN_PIN}</p>}
-                </div>
-              )}
             </article>
           </section>
         ) : (
