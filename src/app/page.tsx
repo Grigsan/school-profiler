@@ -1137,6 +1137,68 @@ function sanitizeFilePart(value: string): string {
     .replace(/^-|-$/g, "");
 }
 
+const CYRILLIC_TO_LATIN_MAP: Record<string, string> = {
+  а: "a",
+  б: "b",
+  в: "v",
+  г: "g",
+  д: "d",
+  е: "e",
+  ё: "e",
+  ж: "zh",
+  з: "z",
+  и: "i",
+  й: "y",
+  к: "k",
+  л: "l",
+  м: "m",
+  н: "n",
+  о: "o",
+  п: "p",
+  р: "r",
+  с: "s",
+  т: "t",
+  у: "u",
+  ф: "f",
+  х: "h",
+  ц: "ts",
+  ч: "ch",
+  ш: "sh",
+  щ: "sch",
+  ъ: "",
+  ы: "y",
+  ь: "",
+  э: "e",
+  ю: "yu",
+  я: "ya",
+};
+
+function sanitizeAsciiFilePart(value: string): string {
+  const transliterated = value
+    .trim()
+    .normalize("NFKD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .replace(/[а-яё]/g, (char) => CYRILLIC_TO_LATIN_MAP[char] ?? "-");
+
+  return transliterated
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/^-|-$/g, "");
+}
+
+function normalizeZipEntryFilename(filename: string, fallbackBaseName: string): string {
+  const trimmed = filename.trim();
+  const dotIndex = trimmed.lastIndexOf(".");
+  const hasExtension = dotIndex > 0 && dotIndex < trimmed.length - 1;
+  const baseNameRaw = hasExtension ? trimmed.slice(0, dotIndex) : trimmed;
+  const extensionRaw = hasExtension ? trimmed.slice(dotIndex + 1) : "";
+  const normalizedBase = sanitizeAsciiFilePart(baseNameRaw) || sanitizeAsciiFilePart(fallbackBaseName) || "file";
+  const normalizedExtension = sanitizeAsciiFilePart(extensionRaw);
+
+  return normalizedExtension ? `${normalizedBase}.${normalizedExtension}` : normalizedBase;
+}
+
 function csvCell(value: string, delimiter: string): string {
   const normalized = value.replace(/\r?\n/g, " ");
   const shouldQuote = normalized.includes("\"") || normalized.includes(delimiter);
@@ -1804,8 +1866,8 @@ export default function Home() {
     }
 
     const snapshots = await captureChartSnapshots(container);
-    const files: Array<{ name: string; content: string | Uint8Array }> = snapshots.map((snapshot) => ({
-      name: `${sanitizeFilePart(snapshot.key)}.png`,
+    const files: Array<{ name: string; content: string | Uint8Array }> = snapshots.map((snapshot, index) => ({
+      name: normalizeZipEntryFilename(`${snapshot.key}.png`, `grafik-${index + 1}.png`),
       content: snapshot.pngBytes,
     }));
 
@@ -1814,7 +1876,10 @@ export default function Home() {
       return;
     }
 
-    files.push({ name: explanationFileName, content: `\uFEFF${explanationLines.join("\r\n")}` });
+    files.push({
+      name: normalizeZipEntryFilename(explanationFileName, "poyasneniya.txt"),
+      content: `\uFEFF${explanationLines.join("\r\n")}`,
+    });
     const zipBlob = zipFiles(files);
     downloadFile(zipBlob, zipName);
     show("ok", `Подготовлен архив: ${zipName}`);
