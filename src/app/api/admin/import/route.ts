@@ -6,16 +6,16 @@ import { fromGrade } from "@/lib/dbStore";
 export const dynamic = "force-dynamic";
 
 type ImportStore = {
-  children: Array<Record<string, unknown>>;
-  accessCodes: Array<Record<string, unknown>>;
-  sessions: Array<Record<string, unknown>>;
+  children: Array<Record<string, any>>;
+  accessCodes: Array<Record<string, any>>;
+  sessions: Array<Record<string, any>>;
 };
 
 export async function POST(request: Request) {
   if (!(await isAdminAuthorized())) return NextResponse.json({ error: "UNAUTHORIZED" }, { status: 401 });
   const body = (await request.json()) as { store: ImportStore; lastBackupAt?: string | null };
 
-  await prisma.$transaction(async (tx) => {
+  await prisma.$transaction(async (tx: typeof prisma) => {
     await tx.answer.deleteMany();
     await tx.specialistReview.deleteMany();
     await tx.session.deleteMany();
@@ -27,7 +27,7 @@ export async function POST(request: Request) {
         data: body.store.children.map((child) => ({
           id: child.id,
           registryId: child.registryId,
-          grade: fromGrade(child.grade),
+          grade: fromGrade(child.grade as 4 | 6),
           classGroup: child.classGroup,
           accessCode: child.accessCode,
           isActive: child.isActive,
@@ -44,7 +44,7 @@ export async function POST(request: Request) {
           code: code.code,
           childId: code.childId,
           registryId: code.registryId,
-          grade: fromGrade(code.grade),
+          grade: fromGrade(code.grade as 4 | 6),
           classGroup: code.classGroup,
           status: code.status,
           createdAt: new Date(code.createdAt),
@@ -59,7 +59,7 @@ export async function POST(request: Request) {
           id: session.id,
           childId: session.childId,
           campaignId: session.campaignId,
-          grade: fromGrade(session.grade),
+          grade: fromGrade(session.grade as 4 | 6),
           status: session.status,
           startedAt: new Date(session.startedAt),
           pausedAt: session.pausedAt ? new Date(session.pausedAt) : null,
@@ -76,7 +76,7 @@ export async function POST(request: Request) {
 
       if (session.answers?.length) {
         await tx.answer.createMany({
-          data: session.answers.map((a: Record<string, unknown>) => ({
+          data: session.answers.map((a: Record<string, any>) => ({
             id: a.id ?? crypto.randomUUID(),
             sessionId: session.id,
             questionId: a.questionId,

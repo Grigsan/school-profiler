@@ -1,12 +1,11 @@
-import { Grade as PrismaGrade, SessionStatus } from "@prisma/client";
 import { FIXED_CAMPAIGNS } from "./store";
 import { prisma } from "./prisma";
 
-function toGrade(grade: PrismaGrade): 4 | 6 {
+function toGrade(grade: "G4" | "G6"): 4 | 6 {
   return grade === "G4" ? 4 : 6;
 }
 
-function fromGrade(grade: 4 | 6): PrismaGrade {
+function fromGrade(grade: 4 | 6): "G4" | "G6" {
   return grade === 4 ? "G4" : "G6";
 }
 
@@ -21,15 +20,15 @@ export async function getDashboardStore() {
   ]);
 
   return {
-    children: children.map((child) => ({ ...child, grade: toGrade(child.grade), createdAt: child.createdAt.toISOString(), updatedAt: undefined })),
-    accessCodes: accessCodes.map((row) => ({
+    children: children.map((child: any) => ({ ...child, grade: toGrade(child.grade), createdAt: child.createdAt.toISOString(), updatedAt: undefined })),
+    accessCodes: accessCodes.map((row: any) => ({
       ...row,
       grade: toGrade(row.grade),
       createdAt: row.createdAt.toISOString(),
       updatedAt: row.updatedAt.toISOString(),
     })),
     campaigns: FIXED_CAMPAIGNS,
-    sessions: sessions.map((session) => ({
+    sessions: sessions.map((session: any) => ({
       id: session.id,
       childId: session.childId,
       campaignId: session.campaignId,
@@ -40,8 +39,8 @@ export async function getDashboardStore() {
       completedAt: session.completedAt?.toISOString(),
       scores: (session.scores as unknown[]) ?? [],
       answers: session.answers
-        .sort((a, b) => a.answeredAt.getTime() - b.answeredAt.getTime())
-        .map((a) => ({ ...a, answeredAt: a.answeredAt.toISOString() })),
+        .sort((a: any, b: any) => a.answeredAt.getTime() - b.answeredAt.getTime())
+        .map((a: any) => ({ ...a, answeredAt: a.answeredAt.toISOString() })),
       pauseEvents: (session.pauseEvents as unknown[]) ?? [],
       quality: (session.quality as object | null) ?? undefined,
       currentQuestionIndex: session.currentQuestionIndex,
@@ -62,19 +61,19 @@ export async function findChildByCode(code: string) {
 
 export async function startOrResumeSession(childId: string, grade: 4 | 6, campaignId: string, create: { id: string; recommendation: string; startedAt: string; scores: unknown[] }) {
   const completed = await prisma.session.findFirst({
-    where: { childId, campaignId, grade: fromGrade(grade), status: SessionStatus.completed },
+    where: { childId, campaignId, grade: fromGrade(grade), status: "completed" },
   });
   if (completed) return { type: "completed" as const };
 
   const resumable = await prisma.session.findFirst({
-    where: { childId, campaignId, grade: fromGrade(grade), status: { in: [SessionStatus.active, SessionStatus.paused] } },
+    where: { childId, campaignId, grade: fromGrade(grade), status: { in: ["active", "paused"] } },
     orderBy: { startedAt: "desc" },
   });
 
   if (resumable) {
     const updated = await prisma.session.update({
       where: { id: resumable.id },
-      data: { status: SessionStatus.active, pausedAt: null },
+      data: { status: "active", pausedAt: null },
     });
     return { type: "resumed" as const, sessionId: updated.id };
   }
@@ -85,7 +84,7 @@ export async function startOrResumeSession(childId: string, grade: 4 | 6, campai
       childId,
       campaignId,
       grade: fromGrade(grade),
-      status: SessionStatus.active,
+      status: "active",
       startedAt: new Date(create.startedAt),
       currentQuestionIndex: 0,
       recommendation: create.recommendation,
