@@ -7,10 +7,107 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
-model AppState {
+enum Grade {
+  G4
+  G6
+}
+
+enum SessionStatus {
+  active
+  paused
+  completed
+}
+
+model Child {
+  id         String   @id
+  registryId String
+  grade      Grade
+  classGroup String
+  accessCode String
+  isActive   Boolean
+  notes      String?
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  accessCodeRow AccessCode?
+  sessions      Session[]
+
+  @@index([classGroup])
+  @@index([registryId])
+}
+
+model AccessCode {
+  id        String   @id
+  code      String   @unique
+  childId   String   @unique
+  registryId String
+  grade     Grade
+  classGroup String
+  status    String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  child Child @relation(fields: [childId], references: [id], onDelete: Cascade)
+
+  @@index([classGroup])
+}
+
+model Session {
+  id          String        @id
+  childId     String
+  campaignId  String
+  grade       Grade
+  status      SessionStatus
+  startedAt   DateTime
+  pausedAt    DateTime?
+  completedAt DateTime?
+  currentQuestionIndex Int  @default(0)
+  recommendation String
+  adminState  String?
+  scores      Json
+  pauseEvents Json
+  quality     Json?
+  adminOverride Json?
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
+
+  child   Child   @relation(fields: [childId], references: [id], onDelete: Cascade)
+  answers Answer[]
+  specialistReview SpecialistReview?
+
+  @@index([childId, campaignId])
+  @@index([status])
+}
+
+model Answer {
+  id          String   @id
+  sessionId   String
+  questionId  String
+  batteryId   String
+  choiceIndex Int
+  isCorrect   Boolean
+  answeredAt  DateTime
+  createdAt   DateTime @default(now())
+
+  session Session @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  @@unique([sessionId, questionId])
+  @@index([sessionId])
+}
+
+model SpecialistReview {
+  id          String   @id
+  sessionId   String   @unique
+  finalDecision String?
+  reviewStatus String?
+  comment     String?
+  updatedAt   DateTime @updatedAt
+
+  session Session @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+}
+
+model SystemMeta {
   id           Int      @id @default(1)
-  revision     Int      @default(0)
-  updatedAt    DateTime @updatedAt
   lastBackupAt DateTime?
-  payload      Json
+  updatedAt    DateTime @updatedAt
 }
