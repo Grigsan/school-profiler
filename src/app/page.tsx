@@ -1637,8 +1637,7 @@ export default function Home() {
     };
     reader.onerror = () => {
       setIsImportingRegistry(false);
-      setRegistryImportSource(null);
-      show("error", "Не удалось прочитать файл импорта.");
+      show("error", `Не удалось прочитать файл «${file.name}». Предыдущий предпросмотр сохранён.`);
     };
     reader.readAsText(file, "utf-8");
   }
