@@ -1126,14 +1126,237 @@ function downloadText(content: string, filename: string, mimeType: string): void
   URL.revokeObjectURL(url);
 }
 
+function sanitizeFilePart(value: string): string {
+  return value
+    .toLowerCase()
+    .replace(/[^a-zа-яё0-9]+/gi, "-")
+    .replace(/-+/g, "-")
+    .replace(/^-|-$/g, "");
+}
+
+function csvCell(value: string, delimiter: string): string {
+  const normalized = value.replace(/\r?\n/g, " ");
+  const shouldQuote = normalized.includes("\"") || normalized.includes(delimiter);
+  const escaped = normalized.replaceAll("\"", "\"\"");
+  return shouldQuote ? `"${escaped}"` : escaped;
+}
+
+function toCsv(rows: string[][], delimiter = ";"): string {
+  return rows.map((row) => row.map((cell) => csvCell(cell, delimiter)).join(delimiter)).join("\r\n");
+}
+
+function downloadCsv(rows: string[][], filename: string): void {
+  const csv = `\uFEFF${toCsv(rows, ";")}`;
+  downloadText(csv, filename, "text/csv;charset=utf-8");
+}
+
+function escapeXml(value: string): string {
+  return value
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll("\"", "&quot;")
+    .replaceAll("'", "&apos;");
+}
+
+function toExcelColumnName(columnIndex: number): string {
+  let dividend = columnIndex;
+  let columnName = "";
+  while (dividend > 0) {
+    const modulo = (dividend - 1) % 26;
+    columnName = String.fromCharCode(65 + modulo) + columnName;
+    dividend = Math.floor((dividend - modulo) / 26);
+  }
+  return columnName;
+}
+
+function buildSheetXml(rows: string[][]): string {
+  const rowXml = rows
+    .map((row, rowIndex) => {
+      const cells = row
+        .map((rawValue, colIndex) => {
+          const cellRef = `${toExcelColumnName(colIndex + 1)}${rowIndex + 1}`;
+          const value = escapeXml(String(rawValue ?? ""));
+          return `<c r="${cellRef}" t="inlineStr"><is><t xml:space="preserve">${value}</t></is></c>`;
+        })
+        .join("");
+      return `<row r="${rowIndex + 1}">${cells}</row>`;
+    })
+    .join("");
+  return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+  <sheetData>${rowXml}</sheetData>
+</worksheet>`;
+}
+
+function crc32(data: Uint8Array): number {
+  let crc = 0xffffffff;
+  for (let i = 0; i < data.length; i += 1) {
+    crc ^= data[i];
+    for (let j = 0; j < 8; j += 1) {
+      crc = (crc >>> 1) ^ (0xedb88320 & -(crc & 1));
+    }
+  }
+  return (crc ^ 0xffffffff) >>> 0;
+}
+
+function zipFiles(files: Array<{ name: string; content: string }>): Blob {
+  const encoder = new TextEncoder();
+  const fileEntries = files.map((file) => {
+    const nameBytes = encoder.encode(file.name);
+    const dataBytes = encoder.encode(file.content);
+    return { ...file, nameBytes, dataBytes, crc: crc32(dataBytes) };
+  });
+  const chunks: Uint8Array[] = [];
+  const central: Uint8Array[] = [];
+  let offset = 0;
+
+  fileEntries.forEach((entry) => {
+    const localHeader = new Uint8Array(30 + entry.nameBytes.length);
+    const view = new DataView(localHeader.buffer);
+    view.setUint32(0, 0x04034b50, true);
+    view.setUint16(4, 20, true);
+    view.setUint16(6, 0, true);
+    view.setUint16(8, 0, true);
+    view.setUint16(10, 0, true);
+    view.setUint16(12, 0, true);
+    view.setUint32(14, entry.crc, true);
+    view.setUint32(18, entry.dataBytes.length, true);
+    view.setUint32(22, entry.dataBytes.length, true);
+    view.setUint16(26, entry.nameBytes.length, true);
+    view.setUint16(28, 0, true);
+    localHeader.set(entry.nameBytes, 30);
+    chunks.push(localHeader, entry.dataBytes);
+
+    const centralHeader = new Uint8Array(46 + entry.nameBytes.length);
+    const centralView = new DataView(centralHeader.buffer);
+    centralView.setUint32(0, 0x02014b50, true);
+    centralView.setUint16(4, 20, true);
+    centralView.setUint16(6, 20, true);
+    centralView.setUint16(8, 0, true);
+    centralView.setUint16(10, 0, true);
+    centralView.setUint16(12, 0, true);
+    centralView.setUint16(14, 0, true);
+    centralView.setUint32(16, entry.crc, true);
+    centralView.setUint32(20, entry.dataBytes.length, true);
+    centralView.setUint32(24, entry.dataBytes.length, true);
+    centralView.setUint16(28, entry.nameBytes.length, true);
+    centralView.setUint16(30, 0, true);
+    centralView.setUint16(32, 0, true);
+    centralView.setUint16(34, 0, true);
+    centralView.setUint16(36, 0, true);
+    centralView.setUint32(38, 0, true);
+    centralView.setUint32(42, offset, true);
+    centralHeader.set(entry.nameBytes, 46);
+    central.push(centralHeader);
+
+    offset += localHeader.length + entry.dataBytes.length;
+  });
+
+  const centralSize = central.reduce((sum, item) => sum + item.length, 0);
+  const endRecord = new Uint8Array(22);
+  const endView = new DataView(endRecord.buffer);
+  endView.setUint32(0, 0x06054b50, true);
+  endView.setUint16(4, 0, true);
+  endView.setUint16(6, 0, true);
+  endView.setUint16(8, fileEntries.length, true);
+  endView.setUint16(10, fileEntries.length, true);
+  endView.setUint32(12, centralSize, true);
+  endView.setUint32(16, offset, true);
+  endView.setUint16(20, 0, true);
+
+  const toArrayBuffer = (bytes: Uint8Array): ArrayBuffer => {
+    const buffer = new ArrayBuffer(bytes.byteLength);
+    new Uint8Array(buffer).set(bytes);
+    return buffer;
+  };
+  const blobParts: BlobPart[] = [...chunks, ...central, endRecord].map((chunk) => toArrayBuffer(chunk));
+  return new Blob(blobParts, { type: "application/zip" });
+}
+
+async function downloadXlsx(sheets: Array<{ name: string; rows: string[][] }>, filename: string): Promise<void> {
+  const workbookSheets = sheets
+    .map((sheet, index) => `<sheet name="${escapeXml(sheet.name.slice(0, 31) || `Лист ${index + 1}`)}" sheetId="${index + 1}" r:id="rId${index + 1}"/>`)
+    .join("");
+  const workbookRels = sheets
+    .map(
+      (_sheet, index) =>
+        `<Relationship Id="rId${index + 1}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet${index + 1}.xml"/>`,
+    )
+    .join("");
+  const worksheetFiles = sheets.map((sheet, index) => ({
+    name: `xl/worksheets/sheet${index + 1}.xml`,
+    content: buildSheetXml(sheet.rows),
+  }));
+  const contentTypesSheets = sheets
+    .map((_, index) => `<Override PartName="/xl/worksheets/sheet${index + 1}.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>`)
+    .join("");
+
+  const workbookFiles = [
+    {
+      name: "[Content_Types].xml",
+      content: `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+  <Default Extension="xml" ContentType="application/xml"/>
+  ${contentTypesSheets}
+  <Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>
+  <Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>
+</Types>`,
+    },
+    {
+      name: "_rels/.rels",
+      content: `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/>
+</Relationships>`,
+    },
+    {
+      name: "xl/workbook.xml",
+      content: `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+  <sheets>${workbookSheets}</sheets>
+</workbook>`,
+    },
+    {
+      name: "xl/_rels/workbook.xml.rels",
+      content: `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  ${workbookRels}
+  <Relationship Id="rId${sheets.length + 1}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>
+</Relationships>`,
+    },
+    {
+      name: "xl/styles.xml",
+      content: `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+  <fonts count="1"><font><name val="Arial"/><sz val="10"/></font></fonts>
+  <fills count="1"><fill><patternFill patternType="none"/></fill></fills>
+  <borders count="1"><border><left/><right/><top/><bottom/><diagonal/></border></borders>
+  <cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs>
+  <cellXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/></cellXfs>
+</styleSheet>`,
+    },
+    ...worksheetFiles,
+  ];
+  const blob = zipFiles(workbookFiles);
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename;
+  link.click();
+  URL.revokeObjectURL(url);
+}
+
 function printHtmlReport(title: string, htmlContent: string): boolean {
-  const popup = window.open("", "_blank", "noopener,noreferrer,width=1080,height=900");
+  const popup = window.open("", "_blank", "width=1080,height=900");
   if (!popup) return false;
-  popup.document.write(`
+  const printableHtml = `
     <!doctype html>
     <html lang="ru">
       <head>
         <meta charset="utf-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1" />
         <title>${title}</title>
         <style>
           body { font-family: Arial, Helvetica, sans-serif; color: #0f172a; background: #fff; margin: 20px; line-height: 1.4; }
@@ -1148,11 +1371,22 @@ function printHtmlReport(title: string, htmlContent: string): boolean {
         ${htmlContent}
       </body>
     </html>
-  `);
+  `;
+  popup.document.open();
+  popup.document.write(printableHtml);
   popup.document.close();
-  popup.focus();
-  popup.print();
-  popup.close();
+
+  const triggerPrint = () => {
+    popup.focus();
+    popup.print();
+  };
+
+  if (popup.document.readyState === "complete") {
+    popup.setTimeout(triggerPrint, 200);
+  } else {
+    popup.addEventListener("load", () => popup.setTimeout(triggerPrint, 200), { once: true });
+  }
+
   return true;
 }
 
@@ -3017,7 +3251,7 @@ export default function Home() {
               <h2 className="mb-3 text-lg font-semibold text-white">Реестр учеников / коды доступа</h2>
               <p className="mb-3 text-sm text-slate-300">
                 Формат импорта (CSV): <code>student_id,class_group,access_code,is_active,notes</code>. Колонка <code>access_code</code> обязательна.
-                Excel-формат (.xlsx) зарезервирован для следующего шага.
+                Экспортные выгрузки доступны в CSV/XLSX в зависимости от типа отчёта.
               </p>
               <div className="mb-3 rounded-md border border-sky-700/70 bg-sky-950/20 p-3 text-xs text-sky-100">
                 <p className="font-semibold">Импорт реестра с кодами доступа</p>
@@ -3293,18 +3527,22 @@ export default function Home() {
                         <div className="flex flex-wrap gap-2">
                           <button
                             className={buttonSecondaryClass}
-                            onClick={() => {
+                            onClick={async () => {
                               if (!selectedReportExportRows.length) {
                                 show("error", "Нет данных для экспорта отчёта.");
                                 return;
                               }
-                              const content = selectedReportExportRows.map((row) => row.join("\t")).join("\n");
-                              downloadText(content, `child-report-${child?.registryId ?? "student"}-${selectedReportSession.campaignId}.tsv`, "text/tab-separated-values;charset=utf-8");
-                              show("ok", "Индивидуальный отчёт сохранён как TSV.");
+                              const childId = sanitizeFilePart(child?.registryId ?? "anon-001");
+                              const classPart = sanitizeFilePart(selectedReportSession.campaignId);
+                              await downloadXlsx(
+                                [{ name: "Отчёт по ребёнку", rows: selectedReportExportRows }],
+                                `otchet-rebenok-${childId}-${classPart}.xlsx`,
+                              );
+                              show("ok", "Индивидуальный отчёт сохранён в XLSX.");
                             }}
                             type="button"
                           >
-                            Скачать отчёт (TSV)
+                            Скачать отчёт по ребёнку (XLSX)
                           </button>
                           <button
                             className={buttonSecondaryClass}
@@ -3394,7 +3632,7 @@ export default function Home() {
                         <div className="rounded-md border border-slate-700 bg-slate-950/70 p-3 text-xs text-slate-300">
                           <p className="font-semibold text-slate-100">Структурированная секция для PDF/Excel</p>
                           <p className="mt-1">
-                            Карточка ученика, доменная таблица, методологическая пометка и графики выше собраны в печатный макет и поддерживают копирование/скачивание TSV для последующей выгрузки.
+                            Карточка ученика, доменная таблица, методологическая пометка и графики выше собраны в печатный макет и поддерживают экспорт в XLSX.
                           </p>
                         </div>
 
@@ -3672,18 +3910,21 @@ export default function Home() {
               <div className="mb-3 flex flex-wrap gap-2">
                 <button
                   className={buttonSecondaryClass}
-                  onClick={() => {
+                  onClick={async () => {
                     if (!selectedClassSummaryExportRows.length) {
                       show("error", "Нет данных для экспорта рабочей сводки класса.");
                       return;
                     }
-                    const content = selectedClassSummaryExportRows.map((row) => row.join("\t")).join("\n");
-                    downloadText(content, `class-summary-${selectedAnalyticsClass}.tsv`, "text/tab-separated-values;charset=utf-8");
-                    show("ok", `Рабочая сводка ${selectedAnalyticsClass} сохранена как TSV.`);
+                    const classPart = sanitizeFilePart(selectedAnalyticsClass);
+                    await downloadXlsx(
+                      [{ name: "Сводка класса", rows: selectedClassSummaryExportRows }],
+                      `podrobnaya-svodka-klassa-${classPart}.xlsx`,
+                    );
+                    show("ok", `Рабочая сводка ${selectedAnalyticsClass} сохранена в XLSX.`);
                   }}
                   type="button"
                 >
-                  Скачать сводку класса (TSV)
+                  Скачать подробную сводку класса (XLSX)
                 </button>
                 <button
                   className={buttonSecondaryClass}
@@ -3756,7 +3997,7 @@ export default function Home() {
               <div className="rounded-md border border-slate-700 bg-slate-950/70 p-3 text-xs text-slate-300">
                 <p className="font-semibold text-slate-100">Структурированная секция для PDF/Excel</p>
                 <p className="mt-1">
-                  Блоки «Рабочая сводка класса», «Графики сводки», а также TSV-кнопки выше предназначены для прямого копирования в документы специалиста и последующего экспорта.
+                  Блоки «Рабочая сводка класса» и «Графики сводки» поддерживают печать и выгрузку в XLSX/CSV.
                 </p>
               </div>
               <div className="mt-4 rounded-md border border-slate-700 bg-slate-950/70 p-3">
@@ -4015,14 +4256,17 @@ export default function Home() {
                 </label>
                 <button
                   className={buttonSecondaryClass}
-                  onClick={() => {
-                    const content = classDecisionExportRows.map((row) => row.join("\t")).join("\n");
-                    downloadText(content, `decision-workspace-${selectedDecisionClass}.tsv`, "text/tab-separated-values;charset=utf-8");
-                    show("ok", `Таблица итоговых решений ${selectedDecisionClass} сохранена как TSV.`);
+                  onClick={async () => {
+                    const classPart = sanitizeFilePart(selectedDecisionClass);
+                    await downloadXlsx(
+                      [{ name: "Решения класса", rows: classDecisionExportRows }],
+                      `resheniya-klassa-${classPart}.xlsx`,
+                    );
+                    show("ok", `Таблица итоговых решений ${selectedDecisionClass} сохранена в XLSX.`);
                   }}
                   type="button"
                 >
-                  Скачать таблицу решений (TSV)
+                  Скачать таблицу решений (XLSX)
                 </button>
               </div>
 
@@ -4165,24 +4409,12 @@ export default function Home() {
                 <button
                   className={buttonSecondaryClass}
                   onClick={() => {
-                    const content = completedResultsExportRows.map((row) => row.join("\t")).join("\n");
-                    downloadText(content, "completed-results.tsv", "text/tab-separated-values;charset=utf-8");
-                    show("ok", "Таблица завершённых результатов сохранена как TSV.");
+                    downloadCsv(completedResultsExportRows, "itogovaya-tablitsa-zavershennykh-rezultatov.csv");
+                    show("ok", "Таблица завершённых результатов сохранена как CSV.");
                   }}
                   type="button"
                 >
-                  Скачать таблицу (TSV)
-                </button>
-                <button
-                  className={buttonSecondaryClass}
-                  onClick={() => {
-                    const content = completedResultsExportRows.map((row) => row.join("; ")).join("\n");
-                    downloadText(content, "completed-results.txt", "text/plain;charset=utf-8");
-                    show("ok", "Отчёт сохранён как TXT.");
-                  }}
-                  type="button"
-                >
-                  Скачать отчёт (TXT)
+                  Скачать итоговую таблицу (CSV)
                 </button>
               </div>
               <div className="overflow-x-auto rounded-md border border-slate-700">
@@ -4234,13 +4466,12 @@ export default function Home() {
                 <button
                   className={buttonSecondaryClass}
                   onClick={() => {
-                    const content = classSummaryExportRows.map((row) => row.join("\t")).join("\n");
-                    downloadText(content, "class-summary-all.tsv", "text/tab-separated-values;charset=utf-8");
-                    show("ok", "Таблица сводки классов сохранена как TSV.");
+                    downloadCsv(classSummaryExportRows, "svodka-klassov.csv");
+                    show("ok", "Таблица сводки классов сохранена как CSV.");
                   }}
                   type="button"
                 >
-                  Скачать таблицу (TSV)
+                  Скачать сводку классов (CSV)
                 </button>
               </div>
               <div className="overflow-x-auto rounded-md border border-slate-700">
