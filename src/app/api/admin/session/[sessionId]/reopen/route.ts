@@ -10,9 +10,9 @@ export async function POST(request: Request, { params }: { params: Promise<{ ses
   const body = (await request.json()) as { pausedAt: string; currentQuestionIndex: number; scores: unknown[]; recommendation: string; answers: Array<{ questionId: string }> };
 
   const keep = new Set(body.answers.map((x) => x.questionId));
-  await prisma.$transaction(async (tx) => {
+  await prisma.$transaction(async (tx: typeof prisma) => {
     const existing = await tx.answer.findMany({ where: { sessionId } });
-    const toDelete = existing.filter((a) => !keep.has(a.questionId)).map((a) => a.id);
+    const toDelete = existing.filter((a: any) => !keep.has(a.questionId)).map((a: any) => a.id);
     if (toDelete.length) await tx.answer.deleteMany({ where: { id: { in: toDelete } } });
     await tx.session.update({
       where: { id: sessionId },

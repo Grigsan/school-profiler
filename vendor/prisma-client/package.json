@@ -1,0 +1,6 @@
+{
+  "name": "@prisma/client",
+  "version": "6.8.2-local",
+  "main": "index.js",
+  "types": "index.d.ts"
+}

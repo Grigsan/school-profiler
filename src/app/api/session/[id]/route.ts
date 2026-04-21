@@ -19,7 +19,7 @@ export async function GET(_: Request, { params }: { params: Promise<{ id: string
       pauseEvents: session.pauseEvents,
       quality: session.quality,
       adminOverride: session.adminOverride,
-      answers: session.answers.map((a) => ({ ...a, answeredAt: a.answeredAt.toISOString() })),
+      answers: session.answers.map((a: any) => ({ ...a, answeredAt: a.answeredAt.toISOString() })),
       specialistFinalDecision: session.specialistReview?.finalDecision,
       reviewStatus: session.specialistReview?.reviewStatus,
       specialistComment: session.specialistReview?.comment,

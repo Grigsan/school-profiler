@@ -9,7 +9,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ ses
   const { sessionId } = await params;
   const body = (await request.json()) as { specialistFinalDecision?: string; reviewStatus?: string; specialistComment?: string; adminOverride?: { text: string; by: string; at: string } };
 
-  await prisma.$transaction(async (tx) => {
+  await prisma.$transaction(async (tx: typeof prisma) => {
     if (body.adminOverride) {
       await tx.session.update({ where: { id: sessionId }, data: { adminOverride: body.adminOverride } });
     }
