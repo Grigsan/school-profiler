@@ -295,6 +295,11 @@ const SPECIALIST_FINAL_DECISIONS: SpecialistFinalDecision[] = [
   "решение отложено",
 ];
 const SPECIALIST_REVIEW_STATUSES: SpecialistReviewStatus[] = ["не рассмотрен", "в работе", "решение принято", "требует обсуждения"];
+const NON_REVIEW_STATUS = "—" as const;
+
+function getSessionReviewStatus(session: Session): SpecialistReviewStatus {
+  return SPECIALIST_REVIEW_STATUSES.includes(session.reviewStatus as SpecialistReviewStatus) ? (session.reviewStatus as SpecialistReviewStatus) : "не рассмотрен";
+}
 
 function gradeFromClassGroup(group: ClassGroup): Grade {
   return group.startsWith("4") ? 4 : 6;
@@ -929,12 +934,7 @@ function normalizeStore(raw: Store): Store {
         ? (session as Session).specialistFinalDecision
         : undefined,
       specialistComment: typeof (session as Session).specialistComment === "string" ? (session as Session).specialistComment : "",
-      reviewStatus:
-        session.status === "completed"
-          ? SPECIALIST_REVIEW_STATUSES.includes((session as Session).reviewStatus as SpecialistReviewStatus)
-            ? (session as Session).reviewStatus
-            : "не рассмотрен"
-          : undefined,
+      reviewStatus: session.status === "completed" ? getSessionReviewStatus(session as Session) : undefined,
     };
   });
 
@@ -2180,8 +2180,8 @@ export default function Home() {
     const activeCodesCount = issuedCodeStatuses.filter((status) => isCodeUsableInCurrentCycle(status)).length;
     const childrenWithSession = new Set(importedSessions.map((session) => session.childId));
     const notStartedCount = importedChildren.filter((child) => !childrenWithSession.has(child.id)).length;
-    const pendingReviewCount = completedImportedSessions.filter((session) => session.reviewStatus !== "решение принято").length;
-    const finalizedCount = completedImportedSessions.filter((session) => session.reviewStatus === "решение принято").length;
+    const pendingReviewCount = completedImportedSessions.filter((session) => getSessionReviewStatus(session) === "не рассмотрен").length;
+    const finalizedCount = completedImportedSessions.filter((session) => getSessionReviewStatus(session) === "решение принято").length;
     const cycleBaselineAt = getCurrentCycleBaselineAt(importedChildren, issuedCodes, importedSessions);
     const hasBackup =
       Boolean(lastBackupAt) &&
@@ -2198,8 +2198,8 @@ export default function Home() {
       const classSessions = importedSessions.filter((session) => session.campaignId === group);
       const classCompleted = classSessions.filter((session) => session.status === "completed");
       const classPaused = classSessions.filter((session) => session.status === "paused");
-      const classPendingReviews = classCompleted.filter((session) => session.reviewStatus !== "решение принято");
-      const classFinalized = classCompleted.filter((session) => session.reviewStatus === "решение принято");
+      const classPendingReviews = classCompleted.filter((session) => getSessionReviewStatus(session) === "не рассмотрен");
+      const classFinalized = classCompleted.filter((session) => getSessionReviewStatus(session) === "решение принято");
       return {
         classGroup: group,
         importedStudents: classChildren.length,
@@ -2437,12 +2437,12 @@ export default function Home() {
           session,
           completionStatus,
           hasCompletedSession,
-          systemRecommendation: hasCompletedSession ? session.recommendation : "—",
+          systemRecommendation: hasCompletedSession ? session.recommendation : NON_REVIEW_STATUS,
           expertReviewNeeded: hasCompletedSession ? needsExpertReview(session) : false,
-          attemptQualityStatus: (quality?.status ?? "—") as AttemptQualityStatus | "—",
-          finalDecision: (hasCompletedSession ? session?.specialistFinalDecision ?? "—" : "—") as SpecialistFinalDecision | "—",
-          reviewStatus: (hasCompletedSession ? session?.reviewStatus ?? "не рассмотрен" : "—") as SpecialistReviewStatus | "—",
-          specialistComment: hasCompletedSession ? session?.specialistComment?.trim() || "—" : "—",
+          attemptQualityStatus: (quality?.status ?? NON_REVIEW_STATUS) as AttemptQualityStatus | "—",
+          finalDecision: (hasCompletedSession ? session?.specialistFinalDecision ?? NON_REVIEW_STATUS : NON_REVIEW_STATUS) as SpecialistFinalDecision | "—",
+          reviewStatus: (hasCompletedSession && session ? getSessionReviewStatus(session) : NON_REVIEW_STATUS) as SpecialistReviewStatus | "—",
+          specialistComment: hasCompletedSession ? session?.specialistComment?.trim() || NON_REVIEW_STATUS : NON_REVIEW_STATUS,
           completedAt: hasCompletedSession ? session?.completedAt : undefined,
         };
       })
@@ -2453,7 +2453,8 @@ export default function Home() {
     const byCompletion = (row: ClassDecisionRow): boolean => decisionFilterCompletion === "все" || row.completionStatus === decisionFilterCompletion;
     const byFinal = (row: ClassDecisionRow): boolean => decisionFilterFinal === "все" || row.finalDecision === decisionFilterFinal;
     const byReview = (row: ClassDecisionRow): boolean =>
-      decisionFilterReviewStatus === "все" || (row.hasCompletedSession && row.reviewStatus === decisionFilterReviewStatus);
+      decisionFilterReviewStatus === "все" ||
+      (row.hasCompletedSession && row.reviewStatus !== NON_REVIEW_STATUS && row.reviewStatus === decisionFilterReviewStatus);
     const byExpert = (row: ClassDecisionRow): boolean =>
       decisionFilterExpertNeeded === "все" ||
       (decisionFilterExpertNeeded === "требуется" ? row.expertReviewNeeded : !row.expertReviewNeeded);
@@ -2487,13 +2488,13 @@ export default function Home() {
   const decisionWorkspaceSummary = useMemo(() => {
     const rows = decisionClassRows;
     const completedRows = rows.filter((row) => row.hasCompletedSession);
-    const systemMath = rows.filter((row) => row.systemRecommendation.toLowerCase().includes("расширенный профиль")).length;
-    const systemUniversal = rows.filter(
+    const systemMath = completedRows.filter((row) => row.systemRecommendation.toLowerCase().includes("расширенный профиль")).length;
+    const systemUniversal = completedRows.filter(
       (row) =>
-        row.systemRecommendation !== "—" &&
+        row.systemRecommendation !== NON_REVIEW_STATUS &&
         (row.systemRecommendation.toLowerCase().includes("базовый") || row.systemRecommendation.toLowerCase().includes("поддерживающий")),
     ).length;
-    const requireDiscussion = rows.filter(
+    const requireDiscussion = completedRows.filter(
       (row) =>
         row.finalDecision === "требуется дополнительное обсуждение" ||
         row.reviewStatus === "требует обсуждения" ||
