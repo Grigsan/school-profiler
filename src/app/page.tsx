@@ -1319,16 +1319,6 @@ export default function Home() {
     window.localStorage.setItem(LAST_BACKUP_AT_STORAGE_KEY, lastBackupAt);
   }, [lastBackupAt]);
 
-  useEffect(() => {
-    if (!registryImportSource) {
-      setRegistryImportPreview(null);
-      return;
-    }
-    setRegistryImportPreview(
-      parseRegistryCsvContent(registryImportSource.fileName, registryImportSource.content, registryImportMode, selectedRegistryClass),
-    );
-  }, [parseRegistryCsvContent, registryImportSource, registryImportMode, selectedRegistryClass, store.accessCodes, store.children]);
-
   const childrenById = useMemo(() => new Map(store.children.map((child) => [child.id, child])), [store.children]);
   const accessCodesByCode = useMemo(
     () => new Map(store.accessCodes.map((record) => [normalizeAccessCode(record.code), record])),
@@ -1621,6 +1611,16 @@ export default function Home() {
     };
   }, [store.accessCodes, store.children]);
 
+  useEffect(() => {
+    if (!registryImportSource) {
+      setRegistryImportPreview(null);
+      return;
+    }
+    setRegistryImportPreview(
+      parseRegistryCsvContent(registryImportSource.fileName, registryImportSource.content, registryImportMode, selectedRegistryClass),
+    );
+  }, [parseRegistryCsvContent, registryImportSource, registryImportMode, selectedRegistryClass, store.accessCodes, store.children]);
+
   function handleRegistryFileImport(file: File): void {
     const lowerFileName = file.name.toLowerCase();
     if (lowerFileName.endsWith(".xlsx") || lowerFileName.endsWith(".xls")) {
@@ -1637,8 +1637,7 @@ export default function Home() {
     };
     reader.onerror = () => {
       setIsImportingRegistry(false);
-      setRegistryImportSource(null);
-      show("error", "Не удалось прочитать файл импорта.");
+      show("error", `Не удалось прочитать файл «${file.name}». Предыдущий предпросмотр сохранён.`);
     };
     reader.readAsText(file, "utf-8");
   }
