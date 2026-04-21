@@ -1405,6 +1405,14 @@ function blobToUint8Array(blob: Blob): Promise<Uint8Array> {
   return blob.arrayBuffer().then((buffer) => new Uint8Array(buffer));
 }
 
+function uint8ArrayToBase64(bytes: Uint8Array): string {
+  let binary = "";
+  bytes.forEach((value) => {
+    binary += String.fromCharCode(value);
+  });
+  return window.btoa(binary);
+}
+
 async function svgToPngBytes(svgElement: SVGSVGElement): Promise<Uint8Array | null> {
   const rect = svgElement.getBoundingClientRect();
   const width = Math.max(640, Math.round(rect.width || Number(svgElement.getAttribute("width")) || 640));
@@ -1441,10 +1449,65 @@ async function svgToPngBytes(svgElement: SVGSVGElement): Promise<Uint8Array | nu
   }
 }
 
-function printHtmlReport(title: string, htmlContent: string): boolean {
-  const popup = window.open("", "_blank", "width=1080,height=900");
-  if (!popup) return false;
-  const printableHtml = `
+type ChartSnapshot = {
+  key: string;
+  title: string;
+  note?: string;
+  pngBytes: Uint8Array;
+  dataUrl: string;
+};
+
+async function captureChartSnapshots(container: HTMLElement): Promise<ChartSnapshot[]> {
+  const cards = Array.from(container.querySelectorAll<HTMLElement>("[data-chart-export]"));
+  const snapshots: ChartSnapshot[] = [];
+
+  for (const [index, card] of cards.entries()) {
+    const svg = card.querySelector<SVGSVGElement>("svg");
+    if (!svg) continue;
+    const pngBytes = await svgToPngBytes(svg);
+    if (!pngBytes) continue;
+
+    const key = card.dataset.chartExport || `grafik-${index + 1}`;
+    const title =
+      card.querySelector<HTMLElement>("p, h3, h4, .text-sm.font-semibold")?.textContent?.trim() || `График ${index + 1}`;
+    const note = card.querySelector<HTMLElement>(".text-xs")?.textContent?.trim() || "";
+    snapshots.push({
+      key,
+      title,
+      note,
+      pngBytes,
+      dataUrl: `data:image/png;base64,${uint8ArrayToBase64(pngBytes)}`,
+    });
+  }
+
+  return snapshots;
+}
+
+function embedChartSnapshotsIntoMarkup(markup: string, snapshots: ChartSnapshot[]): string {
+  if (typeof window === "undefined") return markup;
+  const parser = new window.DOMParser();
+  const doc = parser.parseFromString(`<div id="root">${markup}</div>`, "text/html");
+  const root = doc.getElementById("root");
+  if (!root) return markup;
+
+  const snapshotsByKey = new Map(snapshots.map((snapshot) => [snapshot.key, snapshot]));
+  root.querySelectorAll<HTMLElement>("[data-chart-export]").forEach((card) => {
+    const key = card.dataset.chartExport;
+    if (!key) return;
+    const snapshot = snapshotsByKey.get(key);
+    if (!snapshot) return;
+    card.innerHTML = `
+      <p style="margin:0 0 8px;font-weight:700;">${escapeXml(snapshot.title)}</p>
+      <img src="${snapshot.dataUrl}" alt="${escapeXml(snapshot.title)}" style="display:block;width:100%;height:auto;border:1px solid #cbd5e1;background:#fff;" />
+      ${snapshot.note ? `<p style="margin:8px 0 0;font-size:12px;color:#334155;">${escapeXml(snapshot.note)}</p>` : ""}
+    `;
+  });
+
+  return root.innerHTML;
+}
+
+function buildPrintableHtml(title: string, htmlContent: string): string {
+  return `
     <!doctype html>
     <html lang="ru">
       <head>
@@ -1460,11 +1523,11 @@ function printHtmlReport(title: string, htmlContent: string): boolean {
           .print-section { margin-bottom: 20px; }
           .print-chart-card { page-break-inside: avoid; break-inside: avoid; margin: 0 0 16px; border: 1px solid #cbd5e1; padding: 10px; }
           .print-major-section { page-break-before: always; break-before: page; }
-          .recharts-responsive-container { width: 100% !important; min-height: 220px !important; height: 220px !important; }
-          .recharts-wrapper, .recharts-surface, svg { max-width: 100% !important; overflow: visible !important; }
+          [data-print-chart] { display: block !important; width: 100% !important; }
           [class*="grid"] { display: block !important; }
           [class*="overflow-x-auto"] { overflow: visible !important; }
           ul { margin: 8px 0 0; }
+          img { max-width: 100%; height: auto; }
         </style>
       </head>
       <body>
@@ -1472,6 +1535,12 @@ function printHtmlReport(title: string, htmlContent: string): boolean {
       </body>
     </html>
   `;
+}
+
+function printHtmlReport(title: string, htmlContent: string): boolean {
+  const popup = window.open("", "_blank", "width=1080,height=900");
+  if (!popup) return false;
+  const printableHtml = buildPrintableHtml(title, htmlContent);
   popup.document.open();
   popup.document.write(printableHtml);
   popup.document.close();
@@ -1683,19 +1752,54 @@ export default function Home() {
     setTimeout(() => setMessage(null), 2800);
   }
 
-  function printFromRef(ref: RefObject<HTMLDivElement | null>, title: string): void {
+  async function printFromRef(
+    ref: RefObject<HTMLDivElement | null>,
+    title: string,
+    chartRef?: RefObject<HTMLDivElement | null>,
+  ): Promise<void> {
     const html = clonePrintMarkup(ref);
     if (!html) {
       show("error", "Нет данных для печати.");
       return;
     }
 
-    const printed = printHtmlReport(title, `<div class="print-section"><h1>${title}</h1>${html}</div>`);
+    let chartSnapshots: ChartSnapshot[] = [];
+    if (chartRef?.current) {
+      chartSnapshots = await captureChartSnapshots(chartRef.current);
+    }
+    const htmlWithCharts = embedChartSnapshotsIntoMarkup(html, chartSnapshots);
+    const printed = printHtmlReport(title, `<div class="print-section"><h1>${title}</h1>${htmlWithCharts}</div>`);
     if (!printed) {
       show("error", "Не удалось открыть окно печати. Проверьте настройки браузера.");
       return;
     }
     show("ok", "Печатная версия открыта.");
+  }
+
+  async function downloadChildReportHtml(
+    reportRef: RefObject<HTMLDivElement | null>,
+    chartRef: RefObject<HTMLDivElement | null>,
+    filename: string,
+    title: string,
+  ): Promise<void> {
+    const html = clonePrintMarkup(reportRef);
+    if (!html) {
+      show("error", "Нет данных для выгрузки отчёта.");
+      return;
+    }
+    if (!chartRef.current) {
+      show("error", "Графики ещё не готовы для выгрузки отчёта.");
+      return;
+    }
+    const snapshots = await captureChartSnapshots(chartRef.current);
+    if (!snapshots.length) {
+      show("error", "Не удалось встроить графики в файл отчёта.");
+      return;
+    }
+    const htmlWithCharts = embedChartSnapshotsIntoMarkup(html, snapshots);
+    const content = buildPrintableHtml(title, `<div class="print-section"><h1>${title}</h1>${htmlWithCharts}</div>`);
+    downloadFile(new Blob([content], { type: "text/html;charset=utf-8" }), filename);
+    show("ok", "Отчёт сохранён как HTML с встроенными графиками.");
   }
 
   async function exportChartsZip(
@@ -1715,15 +1819,11 @@ export default function Home() {
       return;
     }
 
-    const files: Array<{ name: string; content: string | Uint8Array }> = [];
-    for (const [index, card] of chartCards.entries()) {
-      const svg = card.querySelector<SVGSVGElement>("svg");
-      if (!svg) continue;
-      const pngBytes = await svgToPngBytes(svg);
-      if (!pngBytes) continue;
-      const rawName = card.dataset.chartExport || `grafik-${index + 1}`;
-      files.push({ name: `${sanitizeFilePart(rawName)}.png`, content: pngBytes });
-    }
+    const snapshots = await captureChartSnapshots(container);
+    const files: Array<{ name: string; content: string | Uint8Array }> = snapshots.map((snapshot) => ({
+      name: `${sanitizeFilePart(snapshot.key)}.png`,
+      content: snapshot.pngBytes,
+    }));
 
     if (!files.length) {
       show("error", "Не удалось сформировать PNG-файлы графиков.");
@@ -3713,6 +3813,22 @@ export default function Home() {
                         <div className="flex flex-wrap gap-2">
                           <button
                             className={buttonSecondaryClass}
+                            onClick={() => {
+                              const childId = sanitizeFilePart(child?.registryId ?? "anon-001");
+                              const classPart = sanitizeFilePart(selectedReportSession.campaignId);
+                              void downloadChildReportHtml(
+                                individualReportRef,
+                                individualChartsRef,
+                                `otchet-rebenok-${childId}-${classPart}.html`,
+                                "Индивидуальный отчёт специалиста",
+                              );
+                            }}
+                            type="button"
+                          >
+                            Скачать отчёт по ребёнку (HTML)
+                          </button>
+                          <button
+                            className={buttonSecondaryClass}
                             onClick={async () => {
                               if (!selectedReportExportRows.length) {
                                 show("error", "Нет данных для экспорта отчёта.");
@@ -3732,7 +3848,7 @@ export default function Home() {
                           </button>
                           <button
                             className={buttonSecondaryClass}
-                            onClick={() => printFromRef(individualReportRef, "Индивидуальный отчёт специалиста")}
+                            onClick={() => void printFromRef(individualReportRef, "Индивидуальный отчёт специалиста", individualChartsRef)}
                             type="button"
                           >
                             Печатная версия
@@ -4151,7 +4267,7 @@ export default function Home() {
                 </button>
                 <button
                   className={buttonSecondaryClass}
-                  onClick={() => printFromRef(classSummaryRef, `Рабочая сводка класса ${selectedAnalyticsClass}`)}
+                  onClick={() => void printFromRef(classSummaryRef, `Рабочая сводка класса ${selectedAnalyticsClass}`)}
                   type="button"
                 >
                   Печатная версия сводки
