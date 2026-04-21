@@ -1319,16 +1319,6 @@ export default function Home() {
     window.localStorage.setItem(LAST_BACKUP_AT_STORAGE_KEY, lastBackupAt);
   }, [lastBackupAt]);
 
-  useEffect(() => {
-    if (!registryImportSource) {
-      setRegistryImportPreview(null);
-      return;
-    }
-    setRegistryImportPreview(
-      parseRegistryCsvContent(registryImportSource.fileName, registryImportSource.content, registryImportMode, selectedRegistryClass),
-    );
-  }, [parseRegistryCsvContent, registryImportSource, registryImportMode, selectedRegistryClass, store.accessCodes, store.children]);
-
   const childrenById = useMemo(() => new Map(store.children.map((child) => [child.id, child])), [store.children]);
   const accessCodesByCode = useMemo(
     () => new Map(store.accessCodes.map((record) => [normalizeAccessCode(record.code), record])),
@@ -1621,6 +1611,16 @@ export default function Home() {
     };
   }, [store.accessCodes, store.children]);
 
+  useEffect(() => {
+    if (!registryImportSource) {
+      setRegistryImportPreview(null);
+      return;
+    }
+    setRegistryImportPreview(
+      parseRegistryCsvContent(registryImportSource.fileName, registryImportSource.content, registryImportMode, selectedRegistryClass),
+    );
+  }, [parseRegistryCsvContent, registryImportSource, registryImportMode, selectedRegistryClass, store.accessCodes, store.children]);
+
   function handleRegistryFileImport(file: File): void {
     const lowerFileName = file.name.toLowerCase();
     if (lowerFileName.endsWith(".xlsx") || lowerFileName.endsWith(".xls")) {
@@ -1690,82 +1690,74 @@ export default function Home() {
     }
 
     const nowIso = new Date().toISOString();
-    let committedRowsCount = 0;
-    let committedCodesCount = 0;
-    let rejectedCodes: string[] = [];
-    let applied = false;
+    const nextBase =
+      registryImportMode === "reset_all"
+        ? { children: [], accessCodes: [], sessions: [] }
+        : registryImportMode === "replace_class"
+          ? {
+              children: store.children.filter((child) => child.classGroup !== selectedRegistryClass),
+              accessCodes: store.accessCodes.filter((code) => code.classGroup !== selectedRegistryClass),
+              sessions: store.sessions.filter((session) => session.campaignId !== selectedRegistryClass),
+            }
+          : { children: store.children, accessCodes: store.accessCodes, sessions: store.sessions };
 
-    setStore((prev) => {
-      const nextBase =
-        registryImportMode === "reset_all"
-          ? { children: [], accessCodes: [], sessions: [] }
-          : registryImportMode === "replace_class"
-            ? {
-                children: prev.children.filter((child) => child.classGroup !== selectedRegistryClass),
-                accessCodes: prev.accessCodes.filter((code) => code.classGroup !== selectedRegistryClass),
-                sessions: prev.sessions.filter((session) => session.campaignId !== selectedRegistryClass),
-              }
-            : { children: prev.children, accessCodes: prev.accessCodes, sessions: prev.sessions };
+    const existingCodes = new Set(nextBase.accessCodes.map((record) => normalizeAccessCode(record.code)));
+    const incomingCodes = new Set<string>();
+    const acceptedRows: typeof rowsToImport = [];
+    const conflicts: string[] = [];
 
-      const existingCodes = new Set(nextBase.accessCodes.map((record) => normalizeAccessCode(record.code)));
-      const incomingCodes = new Set<string>();
-      const acceptedRows: typeof rowsToImport = [];
-      const conflicts: string[] = [];
-
-      for (const row of rowsToImport) {
-        const normalizedCode = normalizeAccessCode(row.accessCode);
-        const isDuplicate = existingCodes.has(normalizedCode) || incomingCodes.has(normalizedCode);
-        if (isDuplicate) {
-          conflicts.push(normalizedCode);
-          continue;
-        }
-        incomingCodes.add(normalizedCode);
-        acceptedRows.push({ ...row, accessCode: normalizedCode });
+    for (const row of rowsToImport) {
+      const normalizedCode = normalizeAccessCode(row.accessCode);
+      const isDuplicate = existingCodes.has(normalizedCode) || incomingCodes.has(normalizedCode);
+      if (isDuplicate) {
+        conflicts.push(normalizedCode);
+        continue;
       }
+      incomingCodes.add(normalizedCode);
+      acceptedRows.push({ ...row, accessCode: normalizedCode });
+    }
 
-      if (!acceptedRows.length) {
-        rejectedCodes = Array.from(new Set(conflicts));
-        applied = false;
-        committedRowsCount = 0;
-        committedCodesCount = 0;
-        return prev;
-      }
+    if (!acceptedRows.length) {
+      const rejectedCodes = Array.from(new Set(conflicts));
+      const rejectedSuffix = rejectedCodes.length ? ` Конфликтующие коды: ${rejectedCodes.join(", ")}.` : "";
+      show("error", `Импорт не выполнен: все строки конфликтуют с уже существующими access_code.${rejectedSuffix}`);
+      return;
+    }
 
-      const newChildren = acceptedRows.map((row) => ({
-        id: uid("ch"),
-        registryId: row.studentId,
-        grade: gradeFromClassGroup(row.classGroup),
-        classGroup: row.classGroup,
-        accessCode: row.accessCode,
-        isActive: row.isActive,
-        notes: row.notes || undefined,
-        createdAt: nowIso,
-      }));
-      const newAccessCodes: AccessCodeRecord[] = newChildren.map((child, index) => ({
-        id: uid("ac"),
-        code: acceptedRows[index].accessCode,
-        childId: child.id,
-        registryId: child.registryId,
-        grade: child.grade,
-        classGroup: child.classGroup,
-        status: child.isActive ? "Выдан" : "Недействителен",
-        createdAt: nowIso,
-        updatedAt: nowIso,
-      }));
+    const newChildren = acceptedRows.map((row) => ({
+      id: uid("ch"),
+      registryId: row.studentId,
+      grade: gradeFromClassGroup(row.classGroup),
+      classGroup: row.classGroup,
+      accessCode: row.accessCode,
+      isActive: row.isActive,
+      notes: row.notes || undefined,
+      createdAt: nowIso,
+    }));
+    const newAccessCodes: AccessCodeRecord[] = newChildren.map((child, index) => ({
+      id: uid("ac"),
+      code: acceptedRows[index].accessCode,
+      childId: child.id,
+      registryId: child.registryId,
+      grade: child.grade,
+      classGroup: child.classGroup,
+      status: child.isActive ? "Выдан" : "Недействителен",
+      createdAt: nowIso,
+      updatedAt: nowIso,
+    }));
 
-      rejectedCodes = Array.from(new Set(conflicts));
-      committedRowsCount = newChildren.length;
-      committedCodesCount = newAccessCodes.length;
-      applied = true;
+    const rejectedCodes = Array.from(new Set(conflicts));
+    const committedRowsCount = newChildren.length;
+    const committedCodesCount = newAccessCodes.length;
+    const nextStore: Store = {
+      ...store,
+      campaigns: FIXED_CAMPAIGNS,
+      children: [...newChildren, ...nextBase.children],
+      accessCodes: [...newAccessCodes, ...nextBase.accessCodes],
+      sessions: nextBase.sessions,
+    };
 
-      return {
-        ...prev,
-        campaigns: FIXED_CAMPAIGNS,
-        children: [...newChildren, ...nextBase.children],
-        accessCodes: [...newAccessCodes, ...nextBase.accessCodes],
-        sessions: nextBase.sessions,
-      };
-    });
+    setStore(nextStore);
 
     const actionLabel =
       registryImportMode === "reset_all"
@@ -1773,12 +1765,6 @@ export default function Home() {
         : registryImportMode === "replace_class"
           ? `Реестр класса ${selectedRegistryClass} заменён`
           : "Строки добавлены в текущий реестр";
-    if (!applied) {
-      const rejectedSuffix = rejectedCodes.length ? ` Конфликтующие коды: ${rejectedCodes.join(", ")}.` : "";
-      show("error", `Импорт не выполнен: все строки конфликтуют с уже существующими access_code.${rejectedSuffix}`);
-      return;
-    }
-
     show("ok", `${actionLabel}: ${committedRowsCount} учеников и ${committedCodesCount} кодов.`);
     if (rejectedCodes.length) {
       show(
