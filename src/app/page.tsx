@@ -375,6 +375,15 @@ function isResumableSession(session: Session): boolean {
   return session.status === "active" || session.status === "paused";
 }
 
+function activateSession(session: Session, resumedAt: string): Session {
+  return {
+    ...session,
+    status: "active",
+    pausedAt: undefined,
+    pauseEvents: (session.pauseEvents ?? []).map((event) => (event.resumedAt ? event : { ...event, resumedAt })),
+  };
+}
+
 function clamp(value: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, value));
 }
@@ -2362,6 +2371,33 @@ export default function Home() {
       campaignId,
     };
 
+    async function fetchCanonicalSessionFromServer(sessionId: string): Promise<Session | null> {
+      const response = await fetch(`/api/session/${sessionId}`);
+      if (!response.ok) return null;
+      const payload = (await response.json()) as { session?: Session };
+      if (!payload?.session) return null;
+      const normalized = normalizeStore({
+        children: store.children,
+        accessCodes: store.accessCodes,
+        campaigns: store.campaigns,
+        sessions: [payload.session],
+      });
+      return normalized.sessions[0] ?? null;
+    }
+
+    function applyCanonicalSession(prev: Store, canonical: Session): Store {
+      const resumedAt = new Date().toISOString();
+      const canonicalExists = prev.sessions.some((session) => session.id === canonical.id);
+      const canonicalActive = activateSession(canonical, resumedAt);
+      if (!canonicalExists) {
+        return { ...prev, sessions: [canonicalActive, ...prev.sessions] };
+      }
+      return {
+        ...prev,
+        sessions: prev.sessions.map((session) => (session.id === canonical.id ? activateSession(session, resumedAt) : session)),
+      };
+    }
+
     if (existingActiveOrPaused) {
       const response = await fetch("/api/student/start", {
         method: "POST",
@@ -2383,24 +2419,12 @@ export default function Home() {
         show("error", "Не удалось получить идентификатор сессии от сервера.");
         return;
       }
+      const knownCanonical = store.sessions.find((session) => session.id === payload.sessionId);
+      const fetchedCanonical = knownCanonical ? null : await fetchCanonicalSessionFromServer(payload.sessionId);
       setStore((prev) => {
-        const canonical = prev.sessions.find((session) => session.id === payload.sessionId);
+        const canonical = prev.sessions.find((session) => session.id === payload.sessionId) ?? fetchedCanonical;
         if (!canonical) return prev;
-        return {
-          ...prev,
-          sessions: prev.sessions.map((session) =>
-            session.id === payload.sessionId
-              ? {
-                  ...session,
-                  status: "active",
-                  pausedAt: undefined,
-                  pauseEvents: (session.pauseEvents ?? []).map((event) =>
-                    event.resumedAt ? event : { ...event, resumedAt: new Date().toISOString() },
-                  ),
-                }
-              : session,
-          ),
-        };
+        return applyCanonicalSession(prev, canonical);
       });
       show("ok", payload.type === "resumed" ? "Возобновлена существующая сессия." : "Сессия активирована.");
       return;
@@ -2446,24 +2470,12 @@ export default function Home() {
       show("error", "Не удалось получить идентификатор сессии от сервера.");
       return;
     }
+    const knownCanonical = store.sessions.find((session) => session.id === payload.sessionId);
+    const fetchedCanonical = knownCanonical ? null : await fetchCanonicalSessionFromServer(payload.sessionId);
     setStore((prev) => {
-      const canonical = prev.sessions.find((session) => session.id === payload.sessionId);
+      const canonical = prev.sessions.find((session) => session.id === payload.sessionId) ?? fetchedCanonical;
       if (!canonical) return prev;
-      return {
-        ...prev,
-        sessions: prev.sessions.map((session) =>
-          session.id === payload.sessionId
-            ? {
-                ...session,
-                status: "active",
-                pausedAt: undefined,
-                pauseEvents: (session.pauseEvents ?? []).map((event) =>
-                  event.resumedAt ? event : { ...event, resumedAt: new Date().toISOString() },
-                ),
-              }
-            : session,
-        ),
-      };
+      return applyCanonicalSession(prev, canonical);
     });
     show("ok", "Возобновлена существующая сессия.");
   }

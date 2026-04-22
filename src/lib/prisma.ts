@@ -115,10 +115,59 @@ CREATE TABLE IF NOT EXISTS systemMeta (
   lastBackupAt TEXT,
   updatedAt TEXT NOT NULL
 );
-CREATE UNIQUE INDEX IF NOT EXISTS session_open_unique_idx
-  ON session (childId, campaignId, grade)
-  WHERE status IN ('active', 'paused');
 `);
+
+function dedupeOpenSessionsForUniqueIndex() {
+  const duplicateGroups = db
+    .prepare(`
+      SELECT childId, campaignId, grade, COUNT(*) AS openCount
+      FROM session
+      WHERE status IN ('active', 'paused')
+      GROUP BY childId, campaignId, grade
+      HAVING COUNT(*) > 1
+    `)
+    .all() as Array<{ childId: string; campaignId: string; grade: Grade; openCount: number }>;
+
+  if (!duplicateGroups.length) return;
+
+  const selectOpenSessions = db.prepare(`
+    SELECT id
+    FROM session
+    WHERE childId = ? AND campaignId = ? AND grade = ? AND status IN ('active', 'paused')
+    ORDER BY datetime(updatedAt) DESC, datetime(startedAt) DESC, datetime(createdAt) DESC, id DESC
+  `);
+  const demoteSession = db.prepare(`
+    UPDATE session
+    SET status = 'completed',
+        completedAt = COALESCE(completedAt, pausedAt, updatedAt, startedAt, ?),
+        pausedAt = NULL,
+        updatedAt = ?,
+        adminState = COALESCE(adminState, 'reset')
+    WHERE id = ?
+  `);
+
+  const now = nowIso();
+  for (const group of duplicateGroups) {
+    const ranked = selectOpenSessions.all(group.childId, group.campaignId, group.grade) as Array<{ id: string }>;
+    ranked.slice(1).forEach((session) => {
+      demoteSession.run(now, now, session.id);
+    });
+  }
+}
+
+db.exec("BEGIN IMMEDIATE");
+try {
+  dedupeOpenSessionsForUniqueIndex();
+  db.exec(`
+    CREATE UNIQUE INDEX IF NOT EXISTS session_open_unique_idx
+      ON session (childId, campaignId, grade)
+      WHERE status IN ('active', 'paused');
+  `);
+  db.exec("COMMIT");
+} catch (error) {
+  db.exec("ROLLBACK");
+  throw error;
+}
 
 function nowIso() {
   return new Date().toISOString();
